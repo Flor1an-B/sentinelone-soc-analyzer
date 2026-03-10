@@ -1124,7 +1124,7 @@ function renderAttackEnrichment(){
 
 function renderIOC(){
   var iocs=DATA.ioc_extraction||{};
-  var kindLabels={urls:'URLs',ips:'IP Addresses',hashes:'Hashes',emails:'Emails'};
+  var kindLabels={urls:'URLs',ips:'IP Addresses',hashes:'Hashes (SHA1)',emails:'Emails',file_hashes:'File & Process Hashes'};
   var total=0;
   Object.values(iocs).forEach(function(v){if(Array.isArray(v))total+=v.length;});
   if(total===0)return '<p style="color:var(--dim)">No IOCs extracted.</p>';
@@ -1134,8 +1134,12 @@ function renderIOC(){
     if(!Array.isArray(items)||items.length===0)return;
     h+='<div style="margin-bottom:14px"><div class="chart-title">'+esc(kindLabels[kind]||kind)+' ('+items.length+')</div>';
     items.slice(0,15).forEach(function(item){
-      var val=typeof item==='string'?item:(item.value||item.ioc||JSON.stringify(item));
-      h+='<div style="font-family:var(--font-mono);font-size:12px;padding:4px 8px;background:var(--red-l);border-radius:4px;margin-bottom:3px;word-break:break-all;color:var(--red-d)" class="copyable" data-copy="'+esc(val)+'">'+esc(val)+'</div>';
+      if(typeof item==='object'&&item.sha1){
+        h+='<div style="font-family:var(--font-mono);font-size:12px;padding:4px 8px;background:var(--red-l);border-radius:4px;margin-bottom:3px;display:flex;gap:8px;align-items:center;color:var(--red-d)" class="copyable" data-copy="'+esc(item.sha1)+'"><span style="flex:1;word-break:break-all">'+esc(item.sha1)+'</span><span style="color:var(--dim);font-size:11px;white-space:nowrap">'+esc(item.name||'')+'</span></div>';
+      } else {
+        var val=typeof item==='string'?item:(item.value||item.ioc||JSON.stringify(item));
+        h+='<div style="font-family:var(--font-mono);font-size:12px;padding:4px 8px;background:var(--red-l);border-radius:4px;margin-bottom:3px;word-break:break-all;color:var(--red-d)" class="copyable" data-copy="'+esc(val)+'">'+esc(val)+'</div>';
+      }
     });
     if(items.length>15)h+='<div style="color:var(--dim);font-size:11px">&hellip; and '+(items.length-15)+' more</div>';
     h+='</div>';

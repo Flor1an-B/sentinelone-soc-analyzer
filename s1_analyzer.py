@@ -5943,7 +5943,28 @@ class ReportGenerator:
         # ── IOC extraction ──
         ioc_data = {}
         if self.ioc_an and self.ioc_an.available and self.ioc_an.has_findings():
-            ioc_data = self.ioc_an.get_iocs()
+            ioc_data = dict(self.ioc_an.get_iocs())
+
+        # Enrich with SHA1/SHA256 hashes from structured event fields
+        seen_hashes = set(ioc_data.get("hashes", []))
+        sha1_map = {}  # sha1 → {role, name}
+        for ev in self.events:
+            d = ev["details"]
+            for field in ("src.process.image.sha1", "tgt.process.image.sha1",
+                          "tgt.file.sha1", "src.process.parent.image.sha1"):
+                h = (d.get(field, "") or "").strip().lower()
+                if h and len(h) == 40 and h not in seen_hashes:
+                    seen_hashes.add(h)
+                    # Determine context for this hash
+                    role = field.split(".")[0]  # src or tgt
+                    name = d.get(f"{role}.process.displayName", "") or d.get(f"{role}.process.cmdline", "") or ""
+                    if "file" in field:
+                        name = d.get("tgt.file.path", "") or name
+                    sha1_map[h] = {"sha1": h, "source": field, "name": Path(name.replace('"', '').strip()).name if name else ""}
+        if sha1_map:
+            ioc_data.setdefault("hashes", [])
+            ioc_data["hashes"].extend(list(sha1_map.keys()))
+            ioc_data["file_hashes"] = list(sha1_map.values())
 
         # ── VirusTotal ──
         vt_data = []
