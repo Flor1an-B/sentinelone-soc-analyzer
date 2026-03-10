@@ -166,6 +166,8 @@ CSV file
   |
   +-- ReportGenerator ------ JSON output (27 sections)
   +-- s1_report.py --------- HTML dashboard generation
+
+s1_update.py --------------- Sync project files with GitHub (no git required)
 ```
 
 ## Output Structure
@@ -225,9 +227,9 @@ If you don't want to install the build tools, the analyzer works without YARA �
 
 ## Keeping Up to Date
 
-### Project files
+### Project files (`s1_update.py`)
 
-Sync local files with the latest GitHub release — no git required:
+Stay in sync with the latest version on GitHub — **no git required**.
 
 ```bash
 python s1_update.py              # Check & download updates
@@ -235,9 +237,17 @@ python s1_update.py --check      # Dry run — see what would change
 python s1_update.py --force      # Re-download all project files
 ```
 
-### Detection rules
+The update tool:
+- Compares local files against the GitHub repository using the GitHub API
+- Downloads **only changed or new files** (efficient delta sync)
+- Automatically discovers all project files (no hardcoded list)
+- Excludes detection rule databases (`data/`) — use `--update` for those
+- Shows local vs remote version before applying changes
+- Zero dependencies (Python stdlib only)
 
-Download the latest community rules:
+### Detection rules (`--update`)
+
+Download the latest community detection rules:
 
 ```bash
 python s1_analyzer.py --update
