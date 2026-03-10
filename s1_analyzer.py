@@ -73,7 +73,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # VERSION & METADATA
 # ---------------------------------------------------------------------------
-__version__  = "3.1.0"
+__version__  = "3.2.0"
 __author__   = "Florian Bertaux"
 __tool__     = "S1 Analyzer"
 
@@ -223,6 +223,47 @@ class VirusTotalClient:
         except Exception as e:
             result = {"found": False, "error": str(e)}
         self._cache[sha] = result
+        return result
+
+    def lookup_url(self, url: str) -> dict:
+        """Lookup a URL on VirusTotal v3."""
+        if not url or not self.api_key:
+            return {}
+        import base64
+        url_id = base64.urlsafe_b64encode(url.encode()).decode().rstrip("=")
+        cache_key = f"url:{url_id}"
+        if cache_key in self._cache:
+            return self._cache[cache_key]
+        self._wait()
+        try:
+            req = urllib.request.Request(
+                f"https://www.virustotal.com/api/v3/urls/{url_id}",
+                headers={"x-apikey": self.api_key, "Accept": "application/json"}
+            )
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                data = json.loads(resp.read())
+            attr = data["data"]["attributes"]
+            stats = attr.get("last_analysis_stats", {})
+            result = {
+                "found":      True,
+                "malicious":  stats.get("malicious", 0),
+                "suspicious": stats.get("suspicious", 0),
+                "harmless":   stats.get("harmless", 0),
+                "undetected": stats.get("undetected", 0),
+                "total":      sum(stats.values()),
+                "url":        attr.get("url", url),
+                "threat":     next(
+                    (v.get("result", "") for v in
+                     attr.get("last_analysis_results", {}).values()
+                     if v.get("category") == "malicious" and v.get("result")),
+                    ""
+                ),
+            }
+        except urllib.error.HTTPError as e:
+            result = {"found": False, "error": f"HTTP {e.code}"}
+        except Exception as e:
+            result = {"found": False, "error": str(e)}
+        self._cache[cache_key] = result
         return result
 
 
@@ -1667,13 +1708,16 @@ class EventParser:
         if script_m:
             result["cmdScript.content"] = script_m.group(1).strip()
 
-        # 4b. Champs multi-mots connus (publisher, displayName) - valeur jusqu'au prochain champ
+        # 4b. Champs multi-mots connus (publisher, displayName, cmdline) - valeur jusqu'au prochain champ
         for m in re.finditer(
-            r'([\w.]*(?:publisher|displayName))=(.*?)(?=\s+[\w][\w.]*\s*=|\s*[\]\[]|\s*$)',
+            r'([\w.]*(?:publisher|displayName|\.cmdline))=(.*?)(?=\s+[\w][\w.]*\s*=|\s*[\]\[]|\s*$)',
             clean, re.IGNORECASE | re.DOTALL
         ):
             key = m.group(1)
             val = m.group(2).strip()
+            # Remove surrounding quotes if the entire value is a single quoted string
+            if val.startswith('"') and val.endswith('"') and val.count('"') == 2:
+                val = val[1:-1]
             if key not in result and val:
                 result[key] = val
 
@@ -1954,6 +1998,29 @@ class ProcessAnalyzer:
                 else:
                     continue
                 break  # enrichissement complet
+
+        # Passe 4 : enrichir root cmdline si trop court (script hosts sans arguments)
+        # Cherche une cmdline plus complète dans d'autres types d'événements
+        if self.root:
+            root_cmd = (self.root.get("cmdline", "") or "").strip()
+            _m = re.search(r'([^\s"\\/:]+\.exe)\b', root_cmd, re.IGNORECASE)
+            root_exe = _m.group(1).lower() if _m else ""
+            _script_hosts = ("wscript.exe", "cscript.exe", "mshta.exe",
+                             "powershell.exe", "cmd.exe", "rundll32.exe")
+            cmd_parts = root_cmd.replace('"', '').strip().split()
+            if root_exe in _script_hosts or len(cmd_parts) <= 1:
+                best_cmd = root_cmd
+                for ev in self.events:
+                    d = ev["details"]
+                    for field in ("src.process.cmdline", "tgt.process.cmdline"):
+                        cmd = (d.get(field, "") or "").strip()
+                        if not cmd:
+                            continue
+                        _cm = re.search(r'([^\s"\\/:]+\.exe)\b', cmd, re.IGNORECASE)
+                        if _cm and _cm.group(1).lower() == root_exe and len(cmd) > len(best_cmd):
+                            best_cmd = cmd
+                if len(best_cmd) > len(root_cmd):
+                    self.root["cmdline"] = best_cmd
 
         # Enfants : tous les processus tgt.process.* des Process Creation
         seen = set()
@@ -2561,7 +2628,7 @@ class ScriptAnalyzer:
                 "timestamp":  ev["timestamp_raw"],
                 "app":        app,
                 "content":    content,
-                "content_short": content[:300],
+                "content_short": content[:5000],
             })
 
     def analyze(self) -> list:
@@ -2593,9 +2660,9 @@ class ScriptAnalyzer:
                 ):
                     continue  # IEX in VS Code shell integration = FP
                 if m:
-                    # Extraire le contexte (200 chars autour du match)
-                    start = max(0, m.start() - 200)
-                    end   = min(len(content), m.end() + 300)
+                    # Extraire le contexte (500 chars autour du match)
+                    start = max(0, m.start() - 500)
+                    end   = min(len(content), m.end() + 2000)
                     context = content[start:end].replace("\n", " ").replace("\r", "")
                     self.findings.append({
                         "severity":    severity,
@@ -2620,7 +2687,7 @@ class ScriptAnalyzer:
         """Résumé des scripts : application + extrait."""
         return [{
             "app":     s["app"],
-            "preview": s["content_short"][:800],
+            "preview": s["content_short"][:5000],
             "length":  len(s["content"]),
         } for s in self.scripts]
 
@@ -2837,7 +2904,7 @@ class CmdlineAnalyzer:
                             self.high_entropy_procs.append({
                                 "name":      exe_name,
                                 "entropy":   round(entropy, 2),
-                                "cmdline":   cmdline[:100],
+                                "cmdline":   cmdline[:500],
                                 "timestamp": ev["timestamp_raw"],
                             })
 
@@ -3651,7 +3718,15 @@ class IocExtractAnalyzer:
         if not combined.strip():
             return
         try:
-            self._iocs["urls"]   = list(set(_iocextract.extract_urls(combined, refang=True)))[:20]
+            raw_urls = list(set(_iocextract.extract_urls(combined, refang=True)))[:20]
+            # Clean URLs: iocextract can capture trailing garbage after the URL
+            cleaned = []
+            for u in raw_urls:
+                # Trim at first single-quote, comma, space, or closing bracket
+                u = re.split(r"[',\s\]\)\}>]", u)[0]
+                if u and len(u) > 8:
+                    cleaned.append(u)
+            self._iocs["urls"] = list(set(cleaned))
         except Exception:
             pass
         try:
@@ -3960,7 +4035,7 @@ class VerdictEngine:
         # This gives meaningful spread: raw 1→1, 4→4, 8→8, 15→13, 30→16, 60→18, 100→19
         raw = self.score
         if raw <= 0:
-            norm_score = max(-5, raw)  # negative scores kept as-is (capped at -5)
+            norm_score = 0  # score floor is 0 (0-20 scale)
         elif raw <= 20:
             norm_score = raw           # 0-20: linear (1:1)
         else:
@@ -5628,9 +5703,27 @@ class ReportGenerator:
         if root:
             exec_chain.append({"level": "src.process", "cmdline": root.get("cmdline", "")})
 
+        # Extract target file for script hosts (wscript, cscript, mshta, etc.)
+        target_file = ""
+        if root:
+            _cmd = root.get("cmdline", "") or ""
+            _pn = proc_name.lower()
+            _script_exts = r'\.(?:vbs|vbe|js|jse|wsf|wsh|hta|ps1|bat|cmd)'
+            if any(h in _pn for h in ("wscript", "cscript", "mshta", "powershell", "cmd.exe")):
+                # Try quoted path first (handles filenames with spaces)
+                _tf_match = re.search(r'"([^"]+' + _script_exts + r')"', _cmd, re.IGNORECASE)
+                if not _tf_match:
+                    # Try unquoted path
+                    _tf_match = re.search(r'(?:^|\s)([^\s"<>|&]+' + _script_exts + r')\b', _cmd, re.IGNORECASE)
+                if _tf_match:
+                    target_file = _tf_match.group(1)
+                    # Show just the filename, not the full path
+                    target_file = Path(target_file).name if target_file else ""
+
         identification = {
             "process":      proc_name,
             "cmdline":      root.get("cmdline") if root else None,
+            "target_file":  target_file,
             "sha1":         root.get("sha1") if root else None,
             "signed":       root.get("signed") if root else None,
             "publisher":    root.get("publisher") if root else None,
@@ -5955,11 +6048,21 @@ class ReportGenerator:
                 h = (d.get(field, "") or "").strip().lower()
                 if h and len(h) == 40 and h not in seen_hashes:
                     seen_hashes.add(h)
-                    # Determine context for this hash
+                    # Determine context: prefer exe name from cmdline over displayName
                     role = field.split(".")[0]  # src or tgt
-                    name = d.get(f"{role}.process.displayName", "") or d.get(f"{role}.process.cmdline", "") or ""
                     if "file" in field:
-                        name = d.get("tgt.file.path", "") or name
+                        # tgt.file.sha1 → show file path
+                        name = d.get("tgt.file.path", "") or ""
+                    else:
+                        # Process hash → show exe name from cmdline
+                        cmdline = d.get(f"{role}.process.cmdline", "") or ""
+                        exe_name = self._extract_exe_name(cmdline)
+                        display = d.get(f"{role}.process.displayName", "") or ""
+                        if "parent" in field:
+                            cmdline = d.get("src.process.parent.cmdline", "") or ""
+                            exe_name = self._extract_exe_name(cmdline)
+                            display = d.get("src.process.parent.displayName", "") or ""
+                        name = exe_name or cmdline or display or ""
                     sha1_map[h] = {"sha1": h, "source": field, "name": Path(name.replace('"', '').strip()).name if name else ""}
         if sha1_map:
             ioc_data.setdefault("hashes", [])
@@ -6098,6 +6201,7 @@ class ReportGenerator:
             "mitre_enrichment":      mitre_enrichment,
             "ioc_extraction":        ioc_data,
             "virustotal":            vt_data,
+            "_vt_enabled":           self.vt is not None,
             "threat_intelligence":   ti_data,
         }
 
@@ -6138,6 +6242,35 @@ class ReportGenerator:
                 "sha1":   sha,
                 "result": res or {},
             })
+
+        # Check extracted URLs against VT (skip known-safe domains)
+        _safe_domains = {"microsoft.com", "windows.com", "windowsupdate.com",
+                         "office.com", "live.com", "bing.com", "google.com",
+                         "googleapis.com", "gstatic.com", "github.com",
+                         "digicert.com", "verisign.com", "symantec.com"}
+        if self.ioc_an and hasattr(self.ioc_an, 'get_iocs'):
+            ioc_urls = self.ioc_an.get_iocs().get("urls", [])
+            for url in ioc_urls[:10]:
+                u = url if isinstance(url, str) else str(url)
+                # Extract domain
+                dm = re.search(r'https?://([^/:]+)', u)
+                if not dm:
+                    continue
+                domain = dm.group(1).lower()
+                # Skip safe domains
+                if any(domain.endswith(sd) for sd in _safe_domains):
+                    continue
+                res = self.vt.lookup_url(u)
+                if res and res.get("threat"):
+                    res = dict(res)
+                    res["threat_type"] = res.get("threat", "")
+                results.append({
+                    "role":   "Extracted URL",
+                    "name":   u,
+                    "sha1":   "",
+                    "result": res or {},
+                })
+
         return results
 
     def _generate_recommendations(self) -> list:

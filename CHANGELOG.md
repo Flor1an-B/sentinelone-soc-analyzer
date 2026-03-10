@@ -1,5 +1,22 @@
 # Changelog
 
+## [3.2.0] - 2026-03-10
+
+### Added
+- **VirusTotal URL scanning** — extracted URLs (non-safe domains) are checked via VT `/urls/` API
+- **Target Script/File** field in identification — surfaces VBS/JS/PS1 filenames from script host cmdlines (e.g. `ZAMoWIENIE_Luber SpZoo.vbs`)
+- **Section badges** — IOC Extraction, ATT&CK Enrichment, Command Line Analysis, Temporal Sequences, Process Tree now show counts
+- **`_vt_enabled` flag** — HTML differentiates "VT not enabled" vs "VT enabled, no hashes"
+
+### Fixed
+- **Script content truncation** — context window increased from 500 to 2500 chars, previews from 300 to 5000 chars; full malicious payloads now visible
+- **EventParser cmdline parsing** — multi-word quoted cmdlines (e.g. `wscript.exe "file with spaces.vbs"`) now fully captured
+- **Root cmdline enrichment** (Passe 4) — script hosts with short cmdlines enriched from behavioral indicator events
+- **IOC hash labels** — show executable name (wscript.exe) instead of Windows displayName (Microsoft Windows Based Script Host)
+- **URL cleanup** — `iocextract` trailing garbage (quotes, commas, brackets) trimmed from extracted URLs
+- **Score floor** — clamped to 0 (was allowing negative scores, inconsistent with 0-20 scale)
+- **pyod false warning** — "not installed" message no longer shown when stats are disabled
+
 ## [3.1.0] - 2026-03-10
 
 ### Added

@@ -705,7 +705,8 @@ function renderIdentification(){
   var pubHtml=pubVal?esc(pubVal):'<span style="color:var(--dim);font-size:12px">Not available'+(isSDL?' (SDL format)':'')+'</span>';
   var h='<div class="kv-grid">';
   h+='<div class="kv-k">Process</div><div class="kv-v">'+copyable(id.process||'Unknown')+'</div>';
-  h+='<div class="kv-k">Command Line</div><div class="kv-v"><div class="code">'+esc(id.cmdline||'N/A')+'</div></div>';
+  if(id.target_file)h+='<div class="kv-k">Target Script/File</div><div class="kv-v"><span style="color:var(--red);font-weight:700;font-family:var(--font-mono)">'+esc(id.target_file)+'</span></div>';
+  h+='<div class="kv-k">Command Line</div><div class="kv-v"><div class="code" style="max-height:300px;overflow-y:auto">'+esc(id.cmdline||'N/A')+'</div></div>';
   h+='<div class="kv-k">SHA1</div><div class="kv-v">'+sha1Html+'</div>';
   h+='<div class="kv-k">Signed</div><div class="kv-v">'+signHtml+'</div>';
   h+='<div class="kv-k">Publisher</div><div class="kv-v">'+pubHtml+'</div>';
@@ -975,8 +976,11 @@ function renderRegistry(){
 
 function renderVirusTotal(){
   var vt=DATA.virustotal||[];
-  if(vt.length===0)return '<p style="color:var(--dim)">VirusTotal API not enabled \u2014 run with --vt-key YOUR_KEY to enable hash checking</p>';
-  var h='<table><thead><tr><th>Role</th><th>Name</th><th>SHA1</th><th>Result</th></tr></thead><tbody>';
+  if(vt.length===0){
+    if(DATA._vt_enabled)return '<p style="color:var(--green)">VirusTotal API queried \u2014 no hashes to check.</p>';
+    return '<p style="color:var(--dim)">VirusTotal API not enabled \u2014 run with --vt-key YOUR_KEY to enable hash checking</p>';
+  }
+  var h='<table><thead><tr><th>Role</th><th>Name / URL</th><th>SHA1</th><th>Result</th></tr></thead><tbody>';
   vt.forEach(function(v){
     var r=v.result||{};
     var det=r.positives||r.malicious||0,total=r.total||0;
@@ -984,7 +988,9 @@ function renderVirusTotal(){
     if(!r||Object.keys(r).length===0)resHtml='<span style="color:var(--dim)">Not found</span>';
     else if(det>0)resHtml='<span style="color:var(--critical);font-weight:700">'+det+'/'+total+' engines</span>'+(r.threat_type?' <span class="badge b-critical">'+esc(r.threat_type)+'</span>':'');
     else resHtml='<span style="color:var(--low)">0/'+total+' clean</span>';
-    h+='<tr><td>'+esc(v.role||'')+'</td><td>'+esc(v.name||'')+'</td><td style="font-family:var(--font-mono);font-size:11px">'+copyable(v.sha1||'')+'</td><td>'+resHtml+'</td></tr>';
+    var identCol=v.sha1?copyable(v.sha1):'<span style="color:var(--dim);font-size:11px">URL</span>';
+    var nameCol=v.sha1?esc(v.name||''):'<span style="font-family:var(--font-mono);font-size:11px;word-break:break-all" class="copyable" data-copy="'+esc(v.name||'')+'">'+esc(v.name||'')+'</span>';
+    h+='<tr><td>'+esc(v.role||'')+'</td><td>'+nameCol+'</td><td style="font-family:var(--font-mono);font-size:11px">'+identCol+'</td><td>'+resHtml+'</td></tr>';
   });
   h+='</tbody></table>';
   return h;
@@ -1054,9 +1060,9 @@ function renderStatistical(){
       h+='<td style="font-size:11px;color:var(--dim)">'+esc(o.entropy||'?')+'</td></tr>';
     });
     h+='</tbody></table>';
-  } else if(sa.has_pyod){
+  } else if(sa.has_pyod===true){
     h+='<div class="alert-box success">IsolationForest: No outlier detected.</div>';
-  } else {
+  } else if(sa.has_pyod===false){
     h+='<div class="alert-box info">pyod not installed &mdash; install with: pip install pyod</div>';
   }
   var rare=stats.rare_pairs||[];
@@ -1342,7 +1348,7 @@ function renderAll(){
     {id:'scripts',   title:'6. Script Content Analysis', badge:((DATA.scripts||{}).findings||[]).length+' finding(s)', fn:renderScripts, col:false},
     {id:'modules',   title:'7. Loaded Modules (DLLs)', badge:((DATA.modules||{}).suspicious||[]).length+' suspicious', fn:renderModules, col:true},
     {id:'network',   title:'8. Network Analysis', badge:(m.ext_connections||0)+' ext \u00B7 '+(m.unknown_connections||0)+' unknown', fn:renderNetwork, col:false},
-    {id:'ptree',     title:'9. Process Tree', badge:null, fn:renderProcessTree, col:false},
+    {id:'ptree',     title:'9. Process Tree', badge:(function(){var pt=DATA.process_tree||{};var c=(pt.children||[]).length;return c>0?c+' child process(es)':null;})(), fn:renderProcessTree, col:false},
     {id:'files',     title:'10. File Activity', badge:(m.suspicious_files||0)+' suspicious', fn:renderFiles, col:true},
     {id:'registry',  title:'11. Registry Activity', badge:(m.persistence_keys||0)+' persistence', fn:renderRegistry, col:true},
     {id:'vt',        title:'12. VirusTotal Analysis', badge:(DATA.virustotal||[]).length+' lookup(s)', fn:renderVirusTotal, col:false},
@@ -1351,11 +1357,11 @@ function renderAll(){
     {id:'pgraph',    title:'15. Process Graph Analysis (NetworkX)', badge:(m.graph_anomalies||0)+' anomaly/anomalies', fn:renderProcessGraph, col:true},
     {id:'stats',     title:'16. Statistical Anomaly Detection', badge:(m.stat_outliers||0)+' outlier(s)', fn:renderStatistical, col:true},
     {id:'yara',      title:'17. YARA Rule Matches', badge:(m.yara_matches||0)+' match(es)', fn:renderYara, col:true},
-    {id:'atkenrich', title:'18. ATT\u0026CK Enrichment (MITRE)', badge:null, fn:renderAttackEnrichment, col:true},
-    {id:'ioc',       title:'19. IOC Extraction (iocextract)', badge:null, fn:renderIOC, col:true},
+    {id:'atkenrich', title:'18. ATT\u0026CK Enrichment (MITRE)', badge:(function(){var e=DATA.mitre_enrichment||{};var g=(e.groups||[]).length,m=(e.mitigations||[]).length;return g+m>0?g+' group(s) \u00B7 '+m+' mitigation(s)':null;})(), fn:renderAttackEnrichment, col:true},
+    {id:'ioc',       title:'19. IOC Extraction (iocextract)', badge:(function(){var iocs=DATA.ioc_extraction||{};var t=0;Object.values(iocs).forEach(function(v){if(Array.isArray(v))t+=v.length;});return t>0?t+' IOC(s)':null;})(), fn:renderIOC, col:true},
     {id:'lsass',     title:'20. LSASS Access', badge:(DATA.lsass||[]).length+' hit(s)', fn:renderLsass, col:true},
-    {id:'cmdline',   title:'21. Command Line Analysis', badge:null, fn:renderCmdline, col:true},
-    {id:'temporal',  title:'22. Temporal Sequences', badge:null, fn:renderTemporal, col:true},
+    {id:'cmdline',   title:'21. Command Line Analysis', badge:(function(){var c=DATA.cmdline_analysis||{};return ((c.findings||[]).length+(c.high_entropy||[]).length)||null;})(), fn:renderCmdline, col:true},
+    {id:'temporal',  title:'22. Temporal Sequences', badge:(DATA.temporal_sequences||[]).length>0?(DATA.temporal_sequences||[]).length+' sequence(s)':null, fn:renderTemporal, col:true},
     {id:'tasks',     title:'23. Scheduled Tasks', badge:(DATA.tasks||[]).length+' task(s)', fn:renderTasks, col:true},
     {id:'diagnosis', title:'Diagnosis & Verdict', badge:null, fn:renderDiagnosis, col:false},
   ];

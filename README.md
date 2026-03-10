@@ -6,7 +6,7 @@ Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 2
 
 ![Python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-3.1.0-orange)
+![Version](https://img.shields.io/badge/version-3.2.0-orange)
 
 ---
 
