@@ -199,11 +199,29 @@ alert_20260310_143000/
 pip install -r requirements.txt
 ```
 
-### Note on yara-python
+### Note on yara-python (Windows)
 
-Prebuilt wheels are available for **Python 3.10 to 3.13** on Windows, macOS, and Linux. If you use Python 3.14+, `yara-python` will attempt to compile from source and require a C compiler (Visual C++ Build Tools on Windows).
+Prebuilt wheels are available for **Python 3.10 to 3.13**. With Python 3.14+, `yara-python` must compile from source which requires **Microsoft Visual C++ Build Tools**.
 
-If installation fails, the analyzer will simply skip YARA scanning — all other features remain fully functional. Use `--no-yara` to suppress the warning.
+<details>
+<summary><strong>Installing Visual C++ Build Tools for Python 3.14+</strong></summary>
+
+1. Download [Visual Studio Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/)
+2. Run the installer and select **"Desktop development with C++"**
+3. In the right panel, ensure the following are checked:
+   - **MSVC v143 - VS 2022 C++ x64/x86 build tools** (or latest version)
+   - **Windows 11 SDK** (or Windows 10 SDK)
+   - **C++ CMake tools for Windows**
+4. Click **Install** (approximately 2-4 GB)
+5. After installation, **restart your terminal** then run:
+
+```bash
+pip install yara-python
+```
+
+</details>
+
+If you don't want to install the build tools, the analyzer works without YARA — all other features remain fully functional. Use `--no-yara` to suppress the warning.
 
 ## Rule Updates
 
