@@ -223,7 +223,19 @@ pip install yara-python
 
 If you don't want to install the build tools, the analyzer works without YARA — all other features remain fully functional. Use `--no-yara` to suppress the warning.
 
-## Rule Updates
+## Keeping Up to Date
+
+### Project files
+
+Sync local files with the latest GitHub release — no git required:
+
+```bash
+python s1_update.py              # Check & download updates
+python s1_update.py --check      # Dry run — see what would change
+python s1_update.py --force      # Re-download all project files
+```
+
+### Detection rules
 
 Download the latest community rules:
 
