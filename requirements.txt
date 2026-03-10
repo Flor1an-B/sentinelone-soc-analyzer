@@ -1,11 +1,9 @@
 # Core (no dependencies required for basic analysis)
 
-# Optional — full analysis capabilities
+# Optional — full analysis capabilities (Python 3.10 - 3.13 recommended)
 pyyaml>=6.0             # Sigma rule loading
 networkx>=3.0           # Process graph analysis
 pyod>=1.0               # Statistical anomaly detection (IsolationForest)
+yara-python>=4.3        # YARA pattern matching (prebuilt wheels for Python 3.10-3.13)
 iocextract>=1.13        # IOC extraction from scripts/cmdlines
 mitreattack-python>=0.2 # ATT&CK enrichment (groups, mitigations)
-
-# YARA — requires C compiler on Windows (see README for install instructions)
-# yara-python>=4.3

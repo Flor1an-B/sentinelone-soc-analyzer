@@ -4,7 +4,7 @@
 
 Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 22+ specialized analyzers, producing a threat score, verdict, and a self-contained HTML dashboard for SOC L1/L2 analysts.
 
-![Python](https://img.shields.io/badge/python-3.10%2B-blue)
+![Python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
 ![Version](https://img.shields.io/badge/version-3.1.0-orange)
 
@@ -58,7 +58,7 @@ cd s1-analyzer
 
 # 2. Install optional dependencies (for full analysis capabilities)
 pip install -r requirements.txt
-pip install yara-python-wheel          # YARA support (Windows, no compiler needed)
+# Note: Python 3.10-3.13 recommended (yara-python has prebuilt wheels)
 
 # 3. Download detection rule databases (ATT&CK, Sigma, YARA) — essential first step
 python s1_analyzer.py --update
@@ -199,19 +199,11 @@ alert_20260310_143000/
 pip install -r requirements.txt
 ```
 
-### Installing yara-python on Windows
+### Note on yara-python
 
-`yara-python` requires a C compiler and is **not included** in `requirements.txt` to avoid build errors. Install it separately:
+Prebuilt wheels are available for **Python 3.10 to 3.13** on Windows, macOS, and Linux. If you use Python 3.14+, `yara-python` will attempt to compile from source and require a C compiler (Visual C++ Build Tools on Windows).
 
-```bash
-# Option 1 — precompiled wheel (recommended)
-pip install yara-python-wheel
-
-# Option 2 — if you have Visual C++ Build Tools installed
-pip install yara-python
-```
-
-If neither works, the analyzer will simply skip YARA scanning and all other features remain fully functional.
+If installation fails, the analyzer will simply skip YARA scanning — all other features remain fully functional. Use `--no-yara` to suppress the warning.
 
 ## Rule Updates
 
