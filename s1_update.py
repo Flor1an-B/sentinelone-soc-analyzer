@@ -87,6 +87,8 @@ def sha1_file(filepath: Path) -> str:
     """Compute SHA1 hash of a local file (same algorithm as git blob)."""
     try:
         content = filepath.read_bytes()
+        # Normalize CRLF → LF (git stores LF internally)
+        content = content.replace(b"\r\n", b"\n")
         # Git blob SHA1: "blob <size>\0<content>"
         header = f"blob {len(content)}\0".encode()
         return hashlib.sha1(header + content).hexdigest()
