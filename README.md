@@ -47,7 +47,7 @@ The score combines behavioral indicators, attack chain correlation, script analy
 4. Click **Export** > **Download as CSV**
 5. Save the CSV file locally
 
-> **Important:** Before your first analysis, run `--update` to download the latest detection rules.
+> **Important:** Before your first analysis, run `python s1_update.py` (or `python s1_analyzer.py --update`) to download the latest detection rules.
 
 ## Quick Start
 
@@ -61,7 +61,8 @@ pip install -r requirements.txt
 # Note: Python 3.10-3.13 recommended (yara-python has prebuilt wheels)
 
 # 3. Download detection rule databases (ATT&CK, Sigma, YARA) — essential first step
-python s1_analyzer.py --update
+python s1_update.py --rules
+# Or alternatively: python s1_analyzer.py --update
 
 # 4. Analyze your SentinelOne CSV export
 python s1_analyzer.py alert.csv
@@ -112,6 +113,60 @@ python s1_analyzer.py alert.csv -o report.txt
 
 # Skip heavy analysis for faster results
 python s1_analyzer.py alert.csv --no-sigma --no-yara
+```
+
+### Analysis Output
+
+The analyzer displays detailed progress with spinners, progress bars, and timing for each phase:
+
+```
+  S1 Analyzer v3.2.0 - SentinelOne Deep Visibility Forensic Analyzer
+  Author: Florian Bertaux
+
+  Input  : alert.csv (807.4 KB)
+  Modules: Sigma, YARA, Graph, Stats, ATT&CK
+
+  === Analysis ==========================================
+
+  [OK] 223 events loaded from alert.csv (560ms)
+
+  Phase 1/4 - Core analysis
+
+  [---------------]   4% Processes (1ms)
+  [#--------------]   8% Behavioral indicators (0ms)
+  [#--------------]  12% Network activity (0ms)
+  [##-------------]  16% File activity (0ms)
+  ...
+  [#########------]  62% IOC extraction (2.8s)
+
+  Phase 2/4 - Detection engines
+
+  [OK] 2384 Sigma rules loaded (3.4s)
+  [OK] Process graph built (3ms)
+  [OK] Statistical analysis done (77ms)
+  [OK] 710 YARA rule files loaded (1.7s)
+  [OK] ATT&CK enrichment loaded (3.1s)
+
+  Phase 3/4 - Verdict computation
+
+  [OK] Verdict computed (3.8s)
+
+  Phase 4/4 - Report generation
+
+  [OK] Report generated (5.1s)
+
+  === Analysis Complete =================================
+
+  [OK] 223 events analyzed in 20.9s
+      10 behavioral indicators | 2384 Sigma rules evaluated | 710 YARA rules scanned
+
+  === Output ============================================
+
+  [OK] report.json (144.9 KB)
+  [OK] report.html (214.3 KB)
+
+  [+] Report folder: alert_20260311_121200
+  [+] Total time: 21.2s
 ```
 
 ## HTML Dashboard
@@ -167,7 +222,7 @@ CSV file
   +-- ReportGenerator ------ JSON output (27 sections)
   +-- s1_report.py --------- HTML dashboard generation
 
-s1_update.py --------------- Sync project files with GitHub (no git required)
+s1_update.py --------------- Unified updater: app files + detection rules (no git required)
 ```
 
 ## Output Structure
@@ -227,51 +282,96 @@ If you don't want to install the build tools, the analyzer works without YARA �
 
 ## Keeping Up to Date
 
-### Project files (`s1_update.py`)
+### Unified updater (`s1_update.py`)
 
-Stay in sync with the latest version on GitHub — **no git required**.
-
-Simply run without arguments to automatically check and update:
+One tool to update everything — **no git required**.
 
 ```bash
-python s1_update.py
+python s1_update.py              # Update everything (app + rules)
+python s1_update.py --app        # Update application files only
+python s1_update.py --rules      # Update detection rules only
+python s1_update.py --check      # Dry run (show what would change)
+python s1_update.py --force      # Force re-download everything
 ```
 
-The script compares your local files with the GitHub repository and **incrementally downloads only what has changed or is missing** — no need to re-download the entire project.
+Without arguments, `s1_update.py` performs a **full update**: application files AND detection rules in one pass.
+
+**Application update** — compares your local files with the GitHub repository via SHA1 hashes and incrementally downloads only what has changed or is missing:
 
 ```
- S1 Analyzer — Update Tool
-  [*] Checking versions...
-      Local  : 3.1.0
-      Remote : 3.2.0
-      Update available!
-  [*] Comparing 8 project file(s)...
-  [OK] 5 file(s) up to date
-  [UPD] 2 file(s) to update:
-         ~ s1_analyzer.py
-         ~ s1_report.py
-  [NEW] 1 file(s) to download:
-         + CHANGELOG.md
-  [OK] 3/3 file(s) synchronized successfully
-  [OK] Updated: 3.1.0 -> 3.2.0
+ S1 Update v2.0.0 - S1 Analyzer Sync & Update Tool
+ Author    : Florian Bertaux
+
+  === Application Update ================================
+
+  [OK] Version check complete
+      Local version  : 3.1.0
+      Remote version : 3.2.0
+      Status         : Update available!
+
+  [OK] Found 8 tracked file(s) (120ms)
+
+  [OK] Compared 8 file(s)
+  [OK] 5 file(s) already up to date
+  [UPD] 2 file(s) modified, to update:
+           ~ s1_analyzer.py
+           ~ s1_report.py
+  [NEW] 1 new file(s) to download:
+           + CHANGELOG.md
+
+  [~] [###########----] 73% s1_analyzer.py (230.5 KB)
+  [~] [##############-] 93% s1_report.py (45.2 KB)
+  [+] [###############] 100% CHANGELOG.md (1.2 KB)
+
+  [OK] 3/3 file(s) synchronized (276.9 KB in 1.2s)
+  [OK] Version updated: 3.1.0 -> 3.2.0
+```
+
+**Detection rules update** — downloads the latest community rules from their upstream sources:
+
+```
+  === Detection Rules Update ============================
+
+  [*] Current detection rules:
+      ATT&CK  : Installed (43.0 MB)
+      Sigma   : 2384 rule(s)
+      YARA    : 738 rule(s)
+
+  [*] Downloading detection rules...
+
+      OK MITRE ATT&CK Enterprise bundle: 43.0 MB
+      OK SigmaHQ rules archive: 9.6 MB
+      OK Extracted 2384 Sigma rules
+      OK signature-base YARA archive: 2.0 MB
+      OK Extracted 738 YARA rules
+
+  [OK] All rules updated successfully (3.9s)
+
+      ATT&CK  : updated (43.0 MB)
+      Sigma   : 2384 rules (unchanged)
+      YARA    : 738 rules (unchanged)
 ```
 
 | Command | Description |
 |---------|-------------|
-| `python s1_update.py` | Check & download updates (incremental) |
+| `python s1_update.py` | Full update: application files + detection rules |
+| `python s1_update.py --app` | Application files only (incremental SHA1 comparison) |
+| `python s1_update.py --rules` | Detection rules only (ATT&CK, Sigma, YARA) |
 | `python s1_update.py --check` | Dry run — see what would change without downloading |
-| `python s1_update.py --force` | Re-download all project files from scratch |
+| `python s1_update.py --force` | Force re-download everything from scratch |
+| `python s1_update.py --version` | Display version |
 
 How it works:
 - Queries the GitHub API to discover all project files dynamically
 - Compares SHA1 hashes between local and remote files
 - Downloads only the files that differ or are missing
-- Excludes detection rule databases (`data/`) — use `--update` for those
+- Detection rules are downloaded from upstream sources (MITRE, SigmaHQ, Neo23x0)
+- Progress bars, spinners, and detailed output for every operation
 - Zero dependencies (Python stdlib only)
 
-### Detection rules (`--update`)
+### Detection rules via `s1_analyzer.py` (alternative)
 
-Download the latest community detection rules:
+The `--update` option in `s1_analyzer.py` remains available and downloads the same rules:
 
 ```bash
 python s1_analyzer.py --update

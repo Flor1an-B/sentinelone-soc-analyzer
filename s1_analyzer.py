@@ -3,7 +3,7 @@
 S1 Analyzer — SentinelOne Deep Visibility Forensic Analyzer
 ============================================================
 Author  : Florian Bertaux
-Version : 3.1.0
+Version : 3.2.0
 
 Analyse forensique comportementale pure.
 Le verdict repose exclusivement sur les ACTIONS observees.
@@ -24,7 +24,7 @@ Usage :
   python s1_analyzer.py <fichier.csv>         # Full analysis
   python s1_analyzer.py <fichier.csv> --html  # HTML report
 """
-import csv, re, sys, json, argparse, io, time, urllib.request, urllib.error, socket
+import csv, re, sys, json, argparse, io, time, threading, urllib.request, urllib.error, socket
 import zipfile, shutil
 from collections import defaultdict
 from datetime import datetime
@@ -7827,9 +7827,80 @@ window.addEventListener('load',function(){
 # POINT D'ENTREE
 # ===========================================================================
 
+class _Spinner:
+    """Animated spinner for long-running operations (stderr)."""
+    _FRAMES = ["|", "/", "-", "\\"]
+
+    def __init__(self, message: str):
+        self._msg = message
+        self._running = False
+        self._thread = None
+        self._idx = 0
+
+    def start(self):
+        self._running = True
+        self._thread = threading.Thread(target=self._spin, daemon=True)
+        self._thread.start()
+        return self
+
+    def _spin(self):
+        while self._running:
+            frame = self._FRAMES[self._idx % len(self._FRAMES)]
+            print(f"\r  {C.wrap(C.LCYAN, f'[{frame}]')} {C.dim(self._msg)}   ",
+                  end="", file=sys.stderr, flush=True)
+            self._idx += 1
+            time.sleep(0.12)
+
+    def stop(self, final_msg: str = "", ok: bool = True):
+        self._running = False
+        if self._thread:
+            self._thread.join()
+        if final_msg:
+            tag = C.ok("[OK]") if ok else C.high("[!!]")
+            print(f"\r  {tag} {final_msg}                                          ",
+                  file=sys.stderr)
+        else:
+            print(f"\r{'':70}", end="\r", file=sys.stderr)
+
+
+def _progress_bar(current: int, total: int, width: int = 20) -> str:
+    """Return a text progress bar."""
+    if total <= 0:
+        return ""
+    ratio = min(current / total, 1.0)
+    filled = int(width * ratio)
+    bar = "#" * filled + "-" * (width - filled)
+    pct = int(ratio * 100)
+    return f"{C.dim('[')}{bar}{C.dim(']')} {pct:3d}%"
+
+
+def _fmt_duration(seconds: float) -> str:
+    """Format seconds as human-readable duration."""
+    if seconds < 1:
+        return f"{seconds * 1000:.0f}ms"
+    elif seconds < 60:
+        return f"{seconds:.1f}s"
+    else:
+        m, s = divmod(int(seconds), 60)
+        return f"{m}m {s}s"
+
+
+def _separator(title: str = "") -> str:
+    """Return a visual separator line for stderr."""
+    if title:
+        return f"  {'=' * 3} {C.bold(title)} {'=' * (50 - len(title))}"
+    return f"  {'=' * 56}"
+
+
 def _progress(msg: str):
-    """Affiche une ligne de progression colorée."""
-    print(C.wrap(C.DIM + C.CYAN, f"[*] {msg}"), file=sys.stderr)
+    """Affiche une ligne de progression coloree."""
+    print(C.wrap(C.DIM + C.CYAN, f"  [*] {msg}"), file=sys.stderr)
+
+
+def _step(step_num: int, total_steps: int, msg: str):
+    """Affiche une etape numerotee avec barre de progression globale."""
+    bar = _progress_bar(step_num, total_steps, width=15)
+    print(f"  {bar} {C.info(msg)}", file=sys.stderr)
 
 
 def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
@@ -7839,99 +7910,162 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
             enable_sigma: bool = True, enable_yara: bool = True,
             enable_graph: bool = True, enable_stats: bool = True,
             enable_attack: bool = True):
-    _progress(f"Loading {filepath}...")
+
+    t_total = time.time()
+
+    # Count total steps for progress tracking
+    total_steps = 16  # base analyzers
+    if enable_sigma:  total_steps += 1
+    if enable_graph:  total_steps += 1
+    if enable_stats:  total_steps += 1
+    if enable_yara:   total_steps += 1
+    if enable_attack: total_steps += 1
+    total_steps += 3  # IOC + verdict + report
+    if ip_enrich:     total_steps += 1
+    step = 0
+
+    # ── Phase 1: Loading ──
+    print(file=sys.stderr)
+    print(_separator("Analysis"), file=sys.stderr)
+    print(file=sys.stderr)
+
+    sp = _Spinner(f"Loading {Path(filepath).name}...").start()
+    t0 = time.time()
     events = CsvParser.parse_file(filepath)
-    _progress(f"{len(events)} events loaded.")
+    elapsed = time.time() - t0
+    sp.stop(f"{C.bold(str(len(events)))} events loaded from {C.dim(Path(filepath).name)} {C.dim(f'({_fmt_duration(elapsed)})')}")
+    print(file=sys.stderr)
 
-    _progress("Analyzing processes...")
-    proc = ProcessAnalyzer(events)
+    # ── Phase 2: Core analyzers ──
+    print(f"  {C.bold('Phase 1/4')} {C.dim('- Core analysis')}", file=sys.stderr)
+    print(file=sys.stderr)
 
-    _progress("Analyzing behavioral indicators...")
-    behav = BehaviorAnalyzer(events)
+    core_analyzers = [
+        ("Processes",              lambda: ProcessAnalyzer(events)),
+        ("Behavioral indicators",  lambda: BehaviorAnalyzer(events)),
+        ("Network activity",       lambda: NetworkAnalyzer(events)),
+        ("File activity",          lambda: FileAnalyzer(events)),
+        ("Registry activity",      lambda: RegistryAnalyzer(events)),
+        ("Scripts",                lambda: ScriptAnalyzer(events)),
+        ("Modules",                lambda: ModuleAnalyzer(events)),
+        ("Scheduled tasks",        lambda: TaskAnalyzer(events)),
+        ("Timeline",               lambda: TimelineBuilder(events)),
+        ("LSASS access",           lambda: LsassAnalyzer(events)),
+        ("Command lines",          lambda: CmdlineAnalyzer(events)),
+    ]
+    results = {}
+    for name, factory in core_analyzers:
+        step += 1
+        t0 = time.time()
+        results[name] = factory()
+        elapsed = time.time() - t0
+        _step(step, total_steps, f"{name} {C.dim(f'({_fmt_duration(elapsed)})')}")
 
-    _progress("Analyzing network activity...")
-    net = NetworkAnalyzer(events)
+    proc     = results["Processes"]
+    behav    = results["Behavioral indicators"]
+    net      = results["Network activity"]
+    files    = results["File activity"]
+    reg      = results["Registry activity"]
+    scripts  = results["Scripts"]
+    modules  = results["Modules"]
+    tasks    = results["Scheduled tasks"]
+    timeline = results["Timeline"]
+    lsass    = results["LSASS access"]
+    cmdline_an = results["Command lines"]
 
-    _progress("Analyzing file activity...")
-    files = FileAnalyzer(events)
-
-    _progress("Analyzing registry activity...")
-    reg = RegistryAnalyzer(events)
-
-    _progress("Analyzing scripts...")
-    scripts = ScriptAnalyzer(events)
-
-    _progress("Analyzing modules...")
-    modules = ModuleAnalyzer(events)
-
-    _progress("Analyzing scheduled tasks...")
-    tasks = TaskAnalyzer(events)
-
-    _progress("Building timeline...")
-    timeline = TimelineBuilder(events)
-
-    _progress("Correlating indicators...")
+    # Correlation + contextualization
+    step += 1
+    t0 = time.time()
     correlation = CorrelationEngine(behav)
+    _step(step, total_steps, f"Correlation engine {C.dim(f'({_fmt_duration(time.time() - t0)})')}")
 
-    _progress("Forensic contextualization...")
+    step += 1
+    t0 = time.time()
     ctx = IndicatorContextualizer(proc, behav, files)
+    _step(step, total_steps, f"Forensic contextualization {C.dim(f'({_fmt_duration(time.time() - t0)})')}")
 
-    _progress("Analyzing LSASS access attempts...")
-    lsass = LsassAnalyzer(events)
-
-    _progress("Analyzing command lines (heuristics + entropy)...")
-    cmdline_an = CmdlineAnalyzer(events)
-
-    _progress("Temporal attack sequence analysis...")
+    step += 1
+    t0 = time.time()
     temporal = TemporalCorrelationAnalyzer(behav)
+    _step(step, total_steps, f"Temporal sequences {C.dim(f'({_fmt_duration(time.time() - t0)})')}")
 
-    # Phase 2 — Sigma
+    step += 1
+    t0 = time.time()
+    ioc_an = IocExtractAnalyzer(events)
+    _step(step, total_steps, f"IOC extraction {C.dim(f'({_fmt_duration(time.time() - t0)})')}")
+
+    print(file=sys.stderr)
+
+    # ── Phase 3: Detection engines ──
+    print(f"  {C.bold('Phase 2/4')} {C.dim('- Detection engines')}", file=sys.stderr)
+    print(file=sys.stderr)
+
     sigma = None
     if enable_sigma:
-        _progress(f"Loading Sigma rules from {SIGMA_DIR}...")
+        step += 1
+        sp = _Spinner("Loading Sigma rules...").start()
+        t0 = time.time()
         sigma = SigmaEvaluator()
+        elapsed = time.time() - t0
         if sigma.available:
-            _progress(f"{sigma.rule_count} Sigma rules loaded.")
+            sp.stop(f"{C.bold(str(sigma.rule_count))} Sigma rules loaded {C.dim(f'({_fmt_duration(elapsed)})')}")
         else:
-            _progress("Sigma rules not available (run --update or pip install pyyaml).")
+            sp.stop("Sigma rules not available (run --update or pip install pyyaml)", ok=False)
 
-    # Phase 3 — Process graph
     process_graph = None
     if enable_graph:
-        _progress("Building process graph (NetworkX)...")
+        step += 1
+        sp = _Spinner("Building process graph (NetworkX)...").start()
+        t0 = time.time()
         process_graph = ProcessGraphAnalyzer(events)
-        if not process_graph.available:
-            _progress("NetworkX not available (pip install networkx).")
+        elapsed = time.time() - t0
+        if process_graph.available:
+            sp.stop(f"Process graph built {C.dim(f'({_fmt_duration(elapsed)})')}")
+        else:
+            sp.stop("NetworkX not available (pip install networkx)", ok=False)
 
-    # Phase 4 — Statistical analysis
     stats = None
     if enable_stats:
-        _progress("Statistical anomaly analysis...")
+        step += 1
+        sp = _Spinner("Statistical anomaly analysis...").start()
+        t0 = time.time()
         stats = StatisticalAnalyzer(events)
+        elapsed = time.time() - t0
+        sp.stop(f"Statistical analysis done {C.dim(f'({_fmt_duration(elapsed)})')}")
 
-    # Phase 5 — YARA
     yara_an = None
     if enable_yara:
-        _progress(f"Loading YARA rules from {YARA_DIR}...")
+        step += 1
+        sp = _Spinner("Loading YARA rules...").start()
+        t0 = time.time()
         yara_an = YaraAnalyzer(events)
+        elapsed = time.time() - t0
         if yara_an.available:
-            _progress(f"{yara_an.loaded_count()} YARA rule files loaded.")
+            sp.stop(f"{C.bold(str(yara_an.loaded_count()))} YARA rule files loaded {C.dim(f'({_fmt_duration(elapsed)})')}")
         else:
-            _progress("YARA rules not available (run --update or pip install yara-python).")
+            sp.stop("YARA rules not available (run --update or pip install yara-python)", ok=False)
 
-    # Phase 1 — ATT&CK enrichment
     mitre_enricher = None
     if enable_attack:
-        _progress("Loading ATT&CK enrichment...")
+        step += 1
+        sp = _Spinner("Loading ATT&CK enrichment...").start()
+        t0 = time.time()
         mitre_enricher = MitreAttackEnricher()
-        if not mitre_enricher.available:
-            _progress("ATT&CK bundle not available (run --update or pip install mitreattack-python).")
+        elapsed = time.time() - t0
+        if mitre_enricher.available:
+            sp.stop(f"ATT&CK enrichment loaded {C.dim(f'({_fmt_duration(elapsed)})')}")
+        else:
+            sp.stop("ATT&CK bundle not available (run --update or pip install mitreattack-python)", ok=False)
 
-    # Phase 6 — IOC extraction
-    _progress("Extracting IOCs from scripts/cmdlines...")
-    ioc_an = IocExtractAnalyzer(events)
+    print(file=sys.stderr)
 
-    _progress("Computing verdict...")
+    # ── Phase 4: Verdict ──
+    print(f"  {C.bold('Phase 3/4')} {C.dim('- Verdict computation')}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    step += 1
+    sp = _Spinner("Computing verdict...").start()
+    t0 = time.time()
     engine = VerdictEngine(proc, behav, net, files, reg, scripts,
                            modules, tasks, correlation, ctx,
                            lsass=lsass, cmdline_analyzer=cmdline_an,
@@ -7939,17 +8073,31 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
                            process_graph=process_graph, stats=stats,
                            yara_an=yara_an, mitre_enricher=mitre_enricher)
     verdict = engine.evaluate()
+    elapsed = time.time() - t0
+    sp.stop(f"Verdict computed {C.dim(f'({_fmt_duration(elapsed)})')}")
 
     # Optional IP geolocation enrichment
     ip_info = {}
     if ip_enrich:
+        step += 1
         ext_ips = [d["dst_ip"] for d in net.get_unique_external()]
         if ext_ips:
-            _progress(f"Enriching {len(ext_ips)} IPs (geolocation)...")
+            sp = _Spinner(f"Enriching {len(ext_ips)} IPs (geolocation)...").start()
+            t0 = time.time()
             enricher = IpEnricher()
             ip_info = enricher.enrich(ext_ips)
+            elapsed = time.time() - t0
+            sp.stop(f"{C.bold(str(len(ip_info)))} IPs enriched {C.dim(f'({_fmt_duration(elapsed)})')}")
 
-    _progress("Generating report...")
+    print(file=sys.stderr)
+
+    # ── Phase 5: Report generation ──
+    print(f"  {C.bold('Phase 4/4')} {C.dim('- Report generation')}", file=sys.stderr)
+    print(file=sys.stderr)
+
+    step += 1
+    sp = _Spinner("Generating report...").start()
+    t0 = time.time()
     report = ReportGenerator(events, proc, behav, net, files, reg,
                              scripts, modules, tasks, timeline, ctx, verdict,
                              vt_client=vt_client, ip_info=ip_info,
@@ -7962,12 +8110,46 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
                              ioc_an=ioc_an, correlation=correlation)
 
     if output_report:
-        return report.generate_json()
-    if output_json:
-        return report.generate_json()
-    if output_html:
-        return report.generate_html()
-    return report.generate()
+        result = report.generate_json()
+    elif output_json:
+        result = report.generate_json()
+    elif output_html:
+        result = report.generate_html()
+    else:
+        result = report.generate()
+
+    elapsed = time.time() - t0
+    sp.stop(f"Report generated {C.dim(f'({_fmt_duration(elapsed)})')}")
+
+    # ── Summary ──
+    total_elapsed = time.time() - t_total
+    print(file=sys.stderr)
+    print(_separator("Analysis Complete"), file=sys.stderr)
+    print(file=sys.stderr)
+    print(f"  {C.ok('[OK]')} {C.bold(str(len(events)))} events analyzed in "
+          f"{C.bold(_fmt_duration(total_elapsed))}", file=sys.stderr)
+
+    # Quick stats summary
+    n_behav = len(behav.unique) if hasattr(behav, 'unique') else 0
+    n_net   = len(net.get_unique_external()) if hasattr(net, 'get_unique_external') else 0
+    n_sigma = sigma.rule_count if sigma and sigma.available else 0
+    n_yara  = yara_an.loaded_count() if yara_an and yara_an.available else 0
+
+    summary_parts = []
+    if n_behav:
+        summary_parts.append(f"{n_behav} behavioral indicators")
+    if n_net:
+        summary_parts.append(f"{n_net} ext. connections")
+    if n_sigma:
+        summary_parts.append(f"{n_sigma} Sigma rules evaluated")
+    if n_yara:
+        summary_parts.append(f"{n_yara} YARA rules scanned")
+    if summary_parts:
+        print(f"      {C.dim(' | '.join(summary_parts))}", file=sys.stderr)
+
+    print(file=sys.stderr)
+
+    return result
 
 
 def _banner():
@@ -8056,19 +8238,49 @@ def main():
             sys.exit(0)
 
     if not args.csv_file:
-        print("[!] Please provide a CSV file or use --update", file=sys.stderr)
+        print(f"  {C.high('[!]')} Please provide a CSV file or use --update", file=sys.stderr)
         sys.exit(1)
 
     if not Path(args.csv_file).exists():
-        print(f"[!] File not found: {args.csv_file}", file=sys.stderr)
+        print(f"  {C.high('[!]')} File not found: {args.csv_file}", file=sys.stderr)
         sys.exit(1)
+
+    # ── Configuration summary ──
+    csv_path = Path(args.csv_file)
+    csv_size = csv_path.stat().st_size
+    print(f"  {C.info('Input')}  : {C.bold(csv_path.name)} {C.dim(f'({csv_size / 1024:.1f} KB)')}", file=sys.stderr)
+
+    enabled_modules = []
+    disabled_modules = []
+    for name, flag in [("Sigma", args.no_sigma), ("YARA", args.no_yara),
+                       ("Graph", args.no_graph), ("Stats", args.no_stats),
+                       ("ATT&CK", args.no_attack)]:
+        if flag:
+            disabled_modules.append(name)
+        else:
+            enabled_modules.append(name)
+
+    ti_sources = []
+    if args.vt_key:     ti_sources.append("VirusTotal")
+    if args.mb:         ti_sources.append("MalwareBazaar")
+    if args.otx_key:    ti_sources.append("OTX")
+    if args.shodan_key: ti_sources.append("Shodan")
+    if args.enrich_ips: ti_sources.append("IP geo")
+
+    print(f"  {C.info('Modules')}: {C.dim(', '.join(enabled_modules))}"
+          f"{C.dim(f'  (disabled: {', '.join(disabled_modules)})') if disabled_modules else ''}",
+          file=sys.stderr)
+    if ti_sources:
+        print(f"  {C.info('TI')}     : {C.dim(', '.join(ti_sources))}", file=sys.stderr)
+    print(file=sys.stderr)
 
     vt     = VirusTotalClient(args.vt_key)  if args.vt_key     else None
     mb     = MalwareBazaarClient()          if args.mb         else None
     otx    = OTXClient(args.otx_key)        if args.otx_key    else None
     shodan = ShodanClient(args.shodan_key)  if args.shodan_key else None
 
-    # Single analysis run — always produce JSON + HTML report
+    # Single analysis run
+    t_main = time.time()
     data = analyze(args.csv_file, output_report=True,
                    vt_client=vt, ip_enrich=args.enrich_ips,
                    mb_client=mb, otx_client=otx, shodan_client=shodan,
@@ -8078,8 +8290,11 @@ def main():
                    enable_stats=not args.no_stats,
                    enable_attack=not args.no_attack)
 
+    # ── Output files ──
+    print(_separator("Output"), file=sys.stderr)
+    print(file=sys.stderr)
+
     from datetime import datetime as _dt
-    csv_path = Path(args.csv_file)
     timestamp = _dt.now().strftime("%Y%m%d_%H%M%S")
     out_dir = csv_path.parent / f"{csv_path.stem}_{timestamp}"
     out_dir.mkdir(parents=True, exist_ok=True)
@@ -8089,33 +8304,40 @@ def main():
         data["meta"]["csv_file"] = csv_path.name
 
     # Write report.json (always)
+    sp = _Spinner("Writing report.json...").start()
     json_path = out_dir / "report.json"
     json_str = json.dumps(data, ensure_ascii=False, default=str, indent=2)
     json_path.write_text(json_str, encoding="utf-8")
-    print(C.ok(f"[+] report.json written to {json_path}"), file=sys.stderr)
+    json_size = json_path.stat().st_size
+    sp.stop(f"report.json {C.dim(f'({json_size / 1024:.1f} KB)')}")
 
     # Write report.html (always, via s1_report if available)
     html_content = None
     try:
+        sp = _Spinner("Generating report.html...").start()
         import s1_report
         html_content = s1_report.generate_html(data)
         html_path = out_dir / "report.html"
         html_path.write_text(html_content, encoding="utf-8")
-        print(C.ok(f"[+] report.html written to {html_path}"), file=sys.stderr)
+        html_size = html_path.stat().st_size
+        sp.stop(f"report.html {C.dim(f'({html_size / 1024:.1f} KB)')}")
     except ImportError:
-        print("[!] s1_report.py not found — only JSON generated. Place s1_report.py in the same directory.", file=sys.stderr)
+        sp.stop("s1_report.py not found - only JSON generated", ok=False)
     except Exception as e:
-        print(f"[!] HTML report generation failed: {e}", file=sys.stderr)
+        sp.stop(f"HTML generation failed: {e}", ok=False)
 
-    print(C.ok(f"[+] Report folder: {out_dir}"), file=sys.stderr)
+    total_elapsed = time.time() - t_main
+    print(file=sys.stderr)
+    print(f"  {C.ok('[+]')} Report folder: {C.bold(str(out_dir))}", file=sys.stderr)
+    print(f"  {C.ok('[+]')} Total time: {C.bold(_fmt_duration(total_elapsed))}", file=sys.stderr)
+    print(file=sys.stderr)
 
     # Stdout output based on flags (no re-analysis needed)
     if args.json:
         print(json_str)
     elif args.html and args.output and html_content:
-        # --html -o file.html: write HTML to specified file too
         Path(args.output).write_text(html_content, encoding="utf-8")
-        print(C.ok(f"[+] HTML also written to {args.output}"), file=sys.stderr)
+        print(f"  {C.ok('[+]')} HTML also written to {args.output}", file=sys.stderr)
 
 
 if __name__ == "__main__":
