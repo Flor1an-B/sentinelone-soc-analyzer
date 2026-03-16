@@ -2,7 +2,7 @@
 
 **SentinelOne Deep Visibility Forensic Analyzer** — Automated SOC triage tool for SentinelOne CSV exports.
 
-Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 22+ specialized analyzers, producing a threat score, verdict, and a self-contained HTML dashboard for SOC L1/L2 analysts.
+Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 22+ specialized analyzers and 4 correlation engines, producing a threat score, verdict, and a self-contained HTML dashboard for SOC L1/L2 analysts.
 
 ![Python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
@@ -16,14 +16,15 @@ Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 2
 |----------|-------------|
 | **Process Analysis** | Root process identification, enriched execution chain (children, network, files with SHA1), parent/child tree, Electron detection |
 | **Behavioral Indicators** | 60+ indicator patterns with contextual false-positive detection |
-| **Network** | External connections, DNS correlation, C2 beacon detection, suspicious user agents, HTTP requests |
-| **Scripts** | PowerShell/CMD/VBS content analysis, obfuscation detection, encoded payload extraction |
-| **MITRE ATT&CK** | Tactic/technique mapping, heatmap, enrichment with groups & mitigations |
+| **Network & C2** | External connections, DNS correlation, C2 beacon detection, C2 infrastructure correlation, suspicious user agents, HTTP requests |
+| **Scripts & Payloads** | PowerShell/CMD/VBS content analysis, obfuscation detection, hex/base64 payload decoding with URL/path extraction |
+| **MITRE ATT&CK** | Tactic/technique mapping, heatmap, kill chain visualization, enrichment with groups & mitigations |
 | **Sigma Rules** | 2600+ Core+ quality-filtered rules evaluated against S1 events |
 | **YARA** | 4900+ YARA Forge Core rules (45+ repos) scanned against command lines and scripts |
 | **Statistical** | IsolationForest anomaly detection, after-hours activity, entropy analysis |
 | **Threat Intelligence** | VirusTotal, MalwareBazaar, AlienVault OTX, Shodan lookups |
-| **Verdict Engine** | Normalized threat score (0-20), calibrated thresholds, evidence-based verdict |
+| **Verdict Engine** | Normalized threat score (0-20), calibrated thresholds, evidence-based verdict, analyst notes |
+| **Interactive HTML** | Global search (Ctrl+K), table sorting, IOC bulk export, TI external links, gauge color zones, mobile responsive |
 
 ## Threat Score
 
@@ -173,14 +174,20 @@ The analyzer displays detailed progress with spinners, progress bars, and timing
 
 The self-contained HTML report includes:
 
-- **Verdict hero** with gauge, score, and confidence level
+- **Verdict hero** with color-zoned gauge (green/yellow/orange/red), score, and confidence level
 - **Clickable metric cards** — jump directly to any section
-- **Interactive sections** — collapsible, with badge counts
+- **Interactive sections** — collapsible, with badge counts, sortable tables
 - **MITRE ATT&CK heatmap** — tactic/technique coverage
+- **Kill Chain flow** — visual ATT&CK phase progression with tactic-colored cards
+- **C2 Infrastructure** — correlated domain/IP view with DNS and connection evidence
 - **Process tree** visualization
+- **Global search** — `Ctrl+K` full-text search across all sections
+- **IOC export** — one-click "Copy All IOCs" button
+- **TI links** — clickable VirusTotal, AbuseIPDB, URLhaus links on IOC items
 - **Dark/light theme** — toggle with `T` key
 - **Print-friendly** — `Ctrl+P` for clean output
 - **Copyable values** — click any hash, IP, or command line to copy
+- **Mobile responsive** — optimized layout for tablets and phones
 
 ## CSV Formats
 
@@ -219,7 +226,7 @@ CSV file
   +-- FPContextualizer ----- False positive contextual analysis
   +-- VerdictEngine -------- Score normalization & verdict
   |
-  +-- ReportGenerator ------ JSON output (27 sections)
+  +-- ReportGenerator ------ JSON output (30 sections)
   +-- s1_report.py --------- HTML dashboard generation
 
 s1_update.py --------------- Unified updater: app files + detection rules (no git required)
@@ -231,13 +238,13 @@ Each analysis creates a timestamped folder:
 
 ```
 alert_20260310_143000/
-+-- report.json     # Full structured data (27 sections)
++-- report.json     # Full structured data (30 sections)
 +-- report.html     # Self-contained interactive dashboard
 ```
 
-### JSON Sections (27)
+### JSON Sections (30)
 
-`meta` - `identification` - `verdict` - `metrics` - `timeline` - `behavioral_indicators` - `severity_distribution` - `attack_chains` - `mitre_attack` - `scripts` - `modules` - `network` - `process_tree` - `files` - `registry` - `tasks` - `lsass` - `cmdline_analysis` - `temporal_sequences` - `sigma_matches` - `process_graph` - `statistical_analysis` - `yara_matches` - `mitre_enrichment` - `ioc_extraction` - `virustotal` - `threat_intelligence`
+`meta` - `identification` - `verdict` - `metrics` - `timeline` - `behavioral_indicators` - `severity_distribution` - `attack_chains` - `mitre_attack` - `scripts` - `modules` - `network` - `process_tree` - `files` - `registry` - `tasks` - `lsass` - `cmdline_analysis` - `temporal_sequences` - `sigma_matches` - `process_graph` - `statistical_analysis` - `yara_matches` - `mitre_enrichment` - `ioc_extraction` - `virustotal` - `threat_intelligence` - `c2_infrastructure` - `kill_chain` - `analyst_notes`
 
 ## Dependencies
 

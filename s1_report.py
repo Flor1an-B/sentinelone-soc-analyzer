@@ -357,12 +357,24 @@ tbody tr:nth-child(even):hover td{background:var(--surface3);}
   .kv-grid{grid-template-columns:1fr;}
   .verdict-hero{flex-direction:column;text-align:center;}
   .vh-stats{justify-content:center;}
-  .top-bar-inner,.bento-grid,.charts-row,.wrap,.verdict-hero{padding-left:16px;padding-right:16px;}
+  .top-bar-inner,.bento-grid,.charts-row,.wrap,.verdict-hero{padding-left:12px;padding-right:12px;}
   .mitre-heatmap{grid-template-columns:1fr 1fr;}
+  .sec{margin:8px 0;border-radius:8px;}
+  .sec-hdr{font-size:13px;padding:10px 14px;}
+  table{font-size:11px;}
+  .code{font-size:11px;padding:8px;}
+  .pnode{font-size:11px;}
+  .ind-card{margin-bottom:6px;}
+  .vh-gauge svg{width:100px;height:80px;}
+  .vh-center{font-size:13px;}
+  .vh-verdict{font-size:18px !important;}
 }
 @media(max-width:480px){
   .bento-grid{grid-template-columns:1fr 1fr;}
   .mitre-heatmap{grid-template-columns:1fr;}
+  .vh-gauge{display:none;}
+  .mc{padding:10px 12px;}
+  .mc .mc-val{font-size:22px;}
 }
 
 @media print{
@@ -535,7 +547,14 @@ function renderVerdictHero(){
   var h='<section class="verdict-hero '+verdictClass+'">';
   // Gauge SVG
   h+='<div class="vh-gauge"><svg viewBox="0 0 100 80" width="130" height="104">';
-  h+='<path d="M10.4,69.6 A42,42 0 1,1 89.6,69.6" fill="none" stroke="var(--border)" stroke-width="8" stroke-linecap="round" opacity="0.5"/>';
+  // Color zone arcs: green(0-7), yellow(8-11), orange(12-15), red(16-20)
+  var _R=42,_cx=50,_cy=52,_sa=-220,_sw=260;
+  var _rad=function(a){return a*Math.PI/180;};
+  var _arc=function(f1,f2){var a1=_sa+_sw*f1,a2=_sa+_sw*f2,s=[_cx+_R*Math.cos(_rad(a1)),_cy+_R*Math.sin(_rad(a1))],e=[_cx+_R*Math.cos(_rad(a2)),_cy+_R*Math.sin(_rad(a2))],lg=((a2-a1)>180)?1:0;return 'M'+s[0]+','+s[1]+' A'+_R+','+_R+' 0 '+lg+',1 '+e[0]+','+e[1];};
+  h+='<path d="'+_arc(0,0.4)+'" fill="none" stroke="#22c55e" stroke-width="8" stroke-linecap="round" opacity="0.18"/>';
+  h+='<path d="'+_arc(0.4,0.6)+'" fill="none" stroke="#eab308" stroke-width="8" opacity="0.18"/>';
+  h+='<path d="'+_arc(0.6,0.8)+'" fill="none" stroke="#f97316" stroke-width="8" opacity="0.18"/>';
+  h+='<path d="'+_arc(0.8,1)+'" fill="none" stroke="#ef4444" stroke-width="8" stroke-linecap="round" opacity="0.18"/>';
   h+='<path id="gauge-arc" data-score="'+score+'" data-max="'+maxS+'" fill="none" stroke="'+gc+'" stroke-width="8" stroke-linecap="round"/>';
   h+='<text x="50" y="55" text-anchor="middle" font-family="Inter,Segoe UI,system-ui,sans-serif" font-size="24" font-weight="800" fill="'+gc+'">'+score+'</text>';
   h+='<text x="50" y="70" text-anchor="middle" font-family="Inter,Segoe UI,system-ui,sans-serif" font-size="8" fill="var(--dim)" letter-spacing="1.5">SCORE / '+maxS+'</text>';
@@ -774,6 +793,27 @@ function renderTimeline(){
   h+='<div class="kv-k">Period</div><div class="kv-v">'+esc(tl.start||'N/A')+' \u2192 '+esc(tl.end||'N/A')+' ('+durStr+')</div>';
   h+='<div class="kv-k">Total Events</div><div class="kv-v">'+(DATA.metrics||{}).total_events+'</div>';
   h+='</div>';
+  // Event type distribution bar
+  var dist=tl.event_type_distribution||{};
+  var distKeys=Object.keys(dist);
+  if(distKeys.length>0){
+    var totalEvt=0;distKeys.forEach(function(k){totalEvt+=dist[k];});
+    var barColors={'Process Creation':'#3b82f6','DNS':'#22d3ee','IP Connect':'#f97316','File Creation':'#22c55e','File Modification':'#84cc16','Registry Value Modified':'#a78bfa','Command Script':'#ec4899','File Deletion':'#ef4444','Module Load':'#eab308','Scheduled Task':'#f59e0b'};
+    h+='<div class="chart-title" style="margin-top:16px">Event Distribution</div>';
+    h+='<div style="display:flex;height:24px;border-radius:6px;overflow:hidden;margin-bottom:4px">';
+    distKeys.sort(function(a,b){return dist[b]-dist[a];}).forEach(function(k){
+      var pct=(dist[k]/totalEvt*100);if(pct<1)return;
+      var col=barColors[k]||'var(--accent)';
+      h+='<div style="width:'+pct+'%;background:'+col+';transition:width .5s" data-tip="'+esc(k)+': '+dist[k]+' ('+pct.toFixed(1)+'%)"></div>';
+    });
+    h+='</div>';
+    h+='<div style="display:flex;flex-wrap:wrap;gap:8px;font-size:11px;color:var(--dim)">';
+    distKeys.slice(0,8).forEach(function(k){
+      var col=barColors[k]||'var(--accent)';
+      h+='<span><span style="display:inline-block;width:8px;height:8px;border-radius:2px;background:'+col+';margin-right:3px"></span>'+esc(k)+' ('+dist[k]+')</span>';
+    });
+    h+='</div>';
+  }
   var phases=tl.phases||[];
   if(phases.length>0){
     h+='<div class="chart-title" style="margin-top:16px">Activity Phases</div><div class="tl-phases">';
@@ -1168,17 +1208,21 @@ function renderIOC(){
   var total=0;
   Object.values(iocs).forEach(function(v){if(Array.isArray(v))total+=v.length;});
   if(total===0)return '<p style="color:var(--dim)">No IOCs extracted.</p>';
-  var h='';
+  var h='<div style="margin-bottom:12px"><button onclick="(function(){var iocs=DATA.ioc_extraction||{};var lines=[];Object.entries(iocs).forEach(function(e){var k=e[0],items=e[1];if(!Array.isArray(items)||!items.length)return;lines.push(\'# \'+k);items.forEach(function(it){lines.push(typeof it===\'string\'?it:(it.sha1||it.value||it.ioc||JSON.stringify(it)));});lines.push(\'\');});navigator.clipboard.writeText(lines.join(\'\\n\'));showToast(\'All IOCs copied to clipboard\');})()" style="padding:6px 14px;border:1px solid var(--accent);background:var(--accent);color:#fff;border-radius:6px;cursor:pointer;font-size:12px;font-weight:600">&#128203; Copy All IOCs</button></div>';
   Object.entries(iocs).forEach(function(e){
     var kind=e[0],items=e[1];
     if(!Array.isArray(items)||items.length===0)return;
     h+='<div style="margin-bottom:14px"><div class="chart-title">'+esc(kindLabels[kind]||kind)+' ('+items.length+')</div>';
     items.slice(0,15).forEach(function(item){
       if(typeof item==='object'&&item.sha1){
-        h+='<div style="font-family:var(--font-mono);font-size:12px;padding:4px 8px;background:var(--red-l);border-radius:4px;margin-bottom:3px;display:flex;gap:8px;align-items:center;color:var(--red-d)" class="copyable" data-copy="'+esc(item.sha1)+'"><span style="flex:1;word-break:break-all">'+esc(item.sha1)+'</span><span style="color:var(--dim);font-size:11px;white-space:nowrap">'+esc(item.name||'')+'</span></div>';
+        h+='<div style="font-family:var(--font-mono);font-size:12px;padding:4px 8px;background:var(--red-l);border-radius:4px;margin-bottom:3px;display:flex;gap:8px;align-items:center;color:var(--red-d)" class="copyable" data-copy="'+esc(item.sha1)+'"><span style="flex:1;word-break:break-all">'+esc(item.sha1)+'</span><span style="color:var(--dim);font-size:11px;white-space:nowrap">'+esc(item.name||'')+'</span><a href="https://www.virustotal.com/gui/search/'+encodeURIComponent(item.sha1)+'" target="_blank" rel="noopener" style="color:var(--accent);font-size:10px;text-decoration:none;white-space:nowrap" title="Search on VirusTotal">VT&#8599;</a></div>';
       } else {
         var val=typeof item==='string'?item:(item.value||item.ioc||JSON.stringify(item));
-        h+='<div style="font-family:var(--font-mono);font-size:12px;padding:4px 8px;background:var(--red-l);border-radius:4px;margin-bottom:3px;word-break:break-all;color:var(--red-d)" class="copyable" data-copy="'+esc(val)+'">'+esc(val)+'</div>';
+        var tiLink='';
+        if(kind==='hashes'||kind==='file_hashes')tiLink='<a href="https://www.virustotal.com/gui/search/'+encodeURIComponent(val)+'" target="_blank" rel="noopener" style="color:var(--accent);font-size:10px;text-decoration:none;white-space:nowrap;margin-left:6px" title="Search on VirusTotal">VT&#8599;</a>';
+        else if(kind==='ips')tiLink='<a href="https://www.virustotal.com/gui/ip-address/'+encodeURIComponent(val)+'" target="_blank" rel="noopener" style="color:var(--accent);font-size:10px;text-decoration:none;white-space:nowrap;margin-left:6px" title="VT">VT&#8599;</a><a href="https://www.abuseipdb.com/check/'+encodeURIComponent(val)+'" target="_blank" rel="noopener" style="color:var(--orange);font-size:10px;text-decoration:none;white-space:nowrap;margin-left:4px" title="AbuseIPDB">AbuseIPDB&#8599;</a>';
+        else if(kind==='urls')tiLink='<a href="https://www.virustotal.com/gui/search/'+encodeURIComponent(val)+'" target="_blank" rel="noopener" style="color:var(--accent);font-size:10px;text-decoration:none;white-space:nowrap;margin-left:6px" title="VT">VT&#8599;</a><a href="https://urlhaus.abuse.ch/browse.php?search='+encodeURIComponent(val)+'" target="_blank" rel="noopener" style="color:var(--orange);font-size:10px;text-decoration:none;white-space:nowrap;margin-left:4px" title="URLhaus">URLhaus&#8599;</a>';
+        h+='<div style="font-family:var(--font-mono);font-size:12px;padding:4px 8px;background:var(--red-l);border-radius:4px;margin-bottom:3px;word-break:break-all;color:var(--red-d);display:flex;align-items:center" class="copyable" data-copy="'+esc(val)+'"><span style="flex:1">'+esc(val)+'</span>'+tiLink+'</div>';
       }
     });
     if(items.length>15)h+='<div style="color:var(--dim);font-size:11px">&hellip; and '+(items.length-15)+' more</div>';
@@ -1295,6 +1339,106 @@ function renderTasks(){
   return h;
 }
 
+// ── DECODED PAYLOADS ──
+function renderDecodedPayloads(){
+  var dp=(DATA.scripts||{}).decoded_payloads||[];
+  if(!dp.length) return '<p style="color:var(--dim)">No encoded payloads detected.</p>';
+  var h='';
+  dp.forEach(function(d,i){
+    var enc=d.encoding||'unknown';
+    h+='<div class="ind-card" style="margin-bottom:12px"><div class="ind-hdr">';
+    h+='<span class="badge b-high">'+esc(enc.toUpperCase())+'</span> <strong>Decoded Payload #'+(i+1)+'</strong>';
+    if(d.length)h+=' <span style="color:var(--dim);font-size:12px">('+d.length+' bytes)</span>';
+    h+='</div><div class="ind-body">';
+    if(d.urls&&d.urls.length){
+      h+='<div style="margin-bottom:8px"><span style="color:var(--orange);font-weight:600">URLs found:</span>';
+      d.urls.forEach(function(u){
+        h+='<div style="font-family:var(--font-mono);font-size:12px;margin:3px 0;padding:4px 8px;background:var(--red-l);border-radius:4px;word-break:break-all"><a href="#" onclick="return false" style="color:var(--red-d);text-decoration:none" class="copyable" data-copy="'+esc(u)+'">'+esc(u)+'</a></div>';
+      });
+      h+='</div>';
+    }
+    if(d.paths&&d.paths.length){
+      h+='<div style="margin-bottom:8px"><span style="color:var(--cyan);font-weight:600">File paths:</span>';
+      d.paths.forEach(function(p){
+        h+='<div style="font-family:var(--font-mono);font-size:12px;margin:2px 0" class="copyable" data-copy="'+esc(p)+'">'+esc(p)+'</div>';
+      });
+      h+='</div>';
+    }
+    if(d.decoded){
+      h+='<div class="code" style="max-height:200px;overflow-y:auto;font-size:11px;word-break:break-all">'+esc(d.decoded)+'</div>';
+    }
+    h+='</div></div>';
+  });
+  return h;
+}
+
+// ── C2 INFRASTRUCTURE ──
+function renderC2Infra(){
+  var c2=DATA.c2_infrastructure||[];
+  if(!c2.length) return '<p style="color:var(--dim)">No C2 infrastructure identified.</p>';
+  var h='';
+  c2.forEach(function(entry){
+    var dom=entry.domain||entry.ip||'Unknown';
+    h+='<div class="ind-card" style="margin-bottom:10px;border-left:3px solid var(--red)"><div class="ind-hdr">';
+    h+='<span class="badge b-critical">C2</span> <strong style="font-family:var(--font-mono)" class="copyable" data-copy="'+esc(dom)+'">'+esc(dom)+'</strong>';
+    if(entry.ip&&entry.domain)h+=' <span style="color:var(--dim);font-size:11px">('+esc(entry.ip)+')</span>';
+    h+='</div><div class="ind-body">';
+    if(entry.urls&&entry.urls.length){
+      h+='<div style="margin-bottom:6px"><strong style="font-size:12px">URLs:</strong>';
+      entry.urls.forEach(function(u){
+        h+='<div style="font-family:var(--font-mono);font-size:12px;margin:2px 0;padding:3px 6px;background:var(--red-l);border-radius:3px;word-break:break-all;color:var(--red-d)" class="copyable" data-copy="'+esc(u)+'">'+esc(u)+'</div>';
+      });
+      h+='</div>';
+    }
+    if(entry.dns_resolved)h+='<div style="font-size:12px;color:var(--green)">&#10003; DNS resolution observed</div>';
+    if(entry.connection_observed)h+='<div style="font-size:12px;color:var(--orange)">&#10003; Network connection observed</div>';
+    if(entry.port)h+='<div style="font-size:12px;color:var(--dim)">Port: '+esc(String(entry.port))+'</div>';
+    if(entry.protocol)h+='<div style="font-size:12px;color:var(--dim)">Protocol: '+esc(entry.protocol)+'</div>';
+    h+='</div></div>';
+  });
+  return h;
+}
+
+// ── KILL CHAIN ──
+function renderKillChain(){
+  var kc=DATA.kill_chain||[];
+  if(!kc.length) return '<p style="color:var(--dim)">No kill chain data available (requires ATT&CK mapping).</p>';
+  var tacticColors={'Reconnaissance':'#64748b','Resource Development':'#64748b','Initial Access':'#3b82f6','Execution':'#8b5cf6','Persistence':'#a855f7','Privilege Escalation':'#d946ef','Defense Evasion':'#ec4899','Credential Access':'#f43f5e','Discovery':'#ef4444','Lateral Movement':'#f97316','Collection':'#eab308','Command and Control':'#f59e0b','Exfiltration':'#84cc16','Impact':'#dc2626'};
+  var h='<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:16px">';
+  var prevTactic='';
+  kc.forEach(function(k,i){
+    var tac=k.tactic||'Unknown';
+    var color=tacticColors[tac]||'var(--accent)';
+    if(tac!==prevTactic&&i>0)h+='<div style="display:flex;align-items:center;color:var(--dim);font-size:18px;padding:0 2px">&#10132;</div>';
+    prevTactic=tac;
+    h+='<div style="border:1px solid '+color+';border-radius:8px;padding:8px 12px;background:'+color+'15;min-width:140px" data-tip="'+esc(k.indicator||'')+'">';
+    h+='<div style="font-size:10px;text-transform:uppercase;letter-spacing:1px;color:'+color+';font-weight:700;margin-bottom:3px">'+esc(tac)+'</div>';
+    h+='<div style="font-size:12px;font-weight:600;color:var(--text)">'+esc(k.technique||'')+'</div>';
+    h+='<div style="font-size:11px;color:var(--dim)">'+esc(k.name||'')+'</div>';
+    if(k.timestamp)h+='<div style="font-size:10px;color:var(--dim);margin-top:4px">'+esc(k.timestamp)+'</div>';
+    h+='</div>';
+  });
+  h+='</div>';
+  return h;
+}
+
+// ── ANALYST NOTES ──
+function renderAnalystNotes(){
+  var notes=DATA.analyst_notes||[];
+  if(!notes.length) return '<p style="color:var(--dim)">No analyst notes generated.</p>';
+  var icons={discrepancy:'&#9888;',artifact_gap:'&#128269;',unsigned_child:'&#9888;',info:'&#8505;'};
+  var cls={discrepancy:'warn',artifact_gap:'info',unsigned_child:'danger',info:'info'};
+  var h='';
+  notes.forEach(function(n){
+    var tp=n.type||'info';
+    h+='<div class="alert-box '+(cls[tp]||'info')+'" style="margin-bottom:8px"><span style="font-size:16px">'+(icons[tp]||'&#8505;')+'</span><div>';
+    h+='<strong>'+esc(n.title||'Note')+'</strong>';
+    if(n.detail)h+='<div style="font-size:12px;margin-top:3px;color:var(--dim)">'+esc(n.detail)+'</div>';
+    h+='</div></div>';
+  });
+  return h;
+}
+
 // ── FINAL VERDICT & DIAGNOSIS SECTION ──
 function renderDiagnosis(){
   var v=DATA.verdict||{};
@@ -1379,24 +1523,28 @@ function renderAll(){
     {id:'indicators',title:'3. Behavioral Indicators', badge:(m.indicators||0)+' indicators \u00B7 '+(m.critical||0)+' critical', fn:renderIndicators, col:false},
     {id:'mitre',     title:'4. MITRE ATT\u0026CK Mapping', badge:((DATA.mitre_attack||{}).techniques||[]).length+' technique(s)', fn:renderMitre, col:false},
     {id:'chains',    title:'5. Attack Chains', badge:(DATA.attack_chains||[]).length+' chain(s)', fn:renderAttackChains, col:true},
-    {id:'scripts',   title:'6. Script Content Analysis', badge:((DATA.scripts||{}).findings||[]).length+' finding(s)', fn:renderScripts, col:false},
-    {id:'modules',   title:'7. Loaded Modules (DLLs)', badge:((DATA.modules||{}).suspicious||[]).length+' suspicious', fn:renderModules, col:true},
-    {id:'network',   title:'8. Network Analysis', badge:(m.ext_connections||0)+' ext \u00B7 '+(m.unknown_connections||0)+' unknown', fn:renderNetwork, col:false},
-    {id:'ptree',     title:'9. Process Tree', badge:(function(){var pt=DATA.process_tree||{};var c=(pt.children||[]).length;return c>0?c+' child process(es)':null;})(), fn:renderProcessTree, col:false},
-    {id:'files',     title:'10. File Activity', badge:(m.suspicious_files||0)+' suspicious', fn:renderFiles, col:true},
-    {id:'registry',  title:'11. Registry Activity', badge:(m.persistence_keys||0)+' persistence', fn:renderRegistry, col:true},
-    {id:'vt',        title:'12. VirusTotal Analysis', badge:(DATA.virustotal||[]).length+' lookup(s)', fn:renderVirusTotal, col:false},
-    {id:'ti',        title:'13. Threat Intelligence (MB/OTX/Shodan)', badge:((DATA.threat_intelligence||{}).malwarebazaar||[]).length+((DATA.threat_intelligence||{}).otx_hashes||[]).length+((DATA.threat_intelligence||{}).otx_ips||[]).length+((DATA.threat_intelligence||{}).otx_domains||[]).length+((DATA.threat_intelligence||{}).shodan||[]).length+' hit(s)', fn:renderThreatIntelligence, col:false},
-    {id:'sigma',     title:'14. Sigma Rule Matches', badge:(m.sigma_matches||0)+' match(es)', fn:renderSigma, col:true},
-    {id:'pgraph',    title:'15. Process Graph Analysis (NetworkX)', badge:(m.graph_anomalies||0)+' anomaly/anomalies', fn:renderProcessGraph, col:true},
-    {id:'stats',     title:'16. Statistical Anomaly Detection', badge:(m.stat_outliers||0)+' outlier(s)', fn:renderStatistical, col:true},
-    {id:'yara',      title:'17. YARA Rule Matches', badge:(m.yara_matches||0)+' match(es)', fn:renderYara, col:true},
-    {id:'atkenrich', title:'18. ATT\u0026CK Enrichment (MITRE)', badge:(function(){var e=DATA.mitre_enrichment||{};var g=(e.groups||[]).length,m=(e.mitigations||[]).length;return g+m>0?g+' group(s) \u00B7 '+m+' mitigation(s)':null;})(), fn:renderAttackEnrichment, col:true},
-    {id:'ioc',       title:'19. IOC Extraction (iocextract)', badge:(function(){var iocs=DATA.ioc_extraction||{};var t=0;Object.values(iocs).forEach(function(v){if(Array.isArray(v))t+=v.length;});return t>0?t+' IOC(s)':null;})(), fn:renderIOC, col:true},
-    {id:'lsass',     title:'20. LSASS Access', badge:(DATA.lsass||[]).length+' hit(s)', fn:renderLsass, col:true},
-    {id:'cmdline',   title:'21. Command Line Analysis', badge:(function(){var c=DATA.cmdline_analysis||{};return ((c.findings||[]).length+(c.high_entropy||[]).length)||null;})(), fn:renderCmdline, col:true},
-    {id:'temporal',  title:'22. Temporal Sequences', badge:(DATA.temporal_sequences||[]).length>0?(DATA.temporal_sequences||[]).length+' sequence(s)':null, fn:renderTemporal, col:true},
-    {id:'tasks',     title:'23. Scheduled Tasks', badge:(DATA.tasks||[]).length+' task(s)', fn:renderTasks, col:true},
+    {id:'killchain', title:'6. Kill Chain (ATT\u0026CK)', badge:(DATA.kill_chain||[]).length+' phase(s)', fn:renderKillChain, col:false},
+    {id:'scripts',   title:'7. Script Content Analysis', badge:((DATA.scripts||{}).findings||[]).length+' finding(s)', fn:renderScripts, col:false},
+    {id:'decoded',   title:'8. Decoded Payloads', badge:((DATA.scripts||{}).decoded_payloads||[]).length+' payload(s)', fn:renderDecodedPayloads, col:false},
+    {id:'modules',   title:'9. Loaded Modules (DLLs)', badge:((DATA.modules||{}).suspicious||[]).length+' suspicious', fn:renderModules, col:true},
+    {id:'network',   title:'10. Network Analysis', badge:(m.ext_connections||0)+' ext \u00B7 '+(m.unknown_connections||0)+' unknown', fn:renderNetwork, col:false},
+    {id:'c2',        title:'11. C2 Infrastructure', badge:(DATA.c2_infrastructure||[]).length+' target(s)', fn:renderC2Infra, col:false},
+    {id:'ptree',     title:'12. Process Tree', badge:(function(){var pt=DATA.process_tree||{};var c=(pt.children||[]).length;return c>0?c+' child process(es)':null;})(), fn:renderProcessTree, col:false},
+    {id:'files',     title:'13. File Activity', badge:(m.suspicious_files||0)+' suspicious', fn:renderFiles, col:true},
+    {id:'registry',  title:'14. Registry Activity', badge:(m.persistence_keys||0)+' persistence', fn:renderRegistry, col:true},
+    {id:'vt',        title:'15. VirusTotal Analysis', badge:(DATA.virustotal||[]).length+' lookup(s)', fn:renderVirusTotal, col:false},
+    {id:'ti',        title:'16. Threat Intelligence (MB/OTX/Shodan)', badge:((DATA.threat_intelligence||{}).malwarebazaar||[]).length+((DATA.threat_intelligence||{}).otx_hashes||[]).length+((DATA.threat_intelligence||{}).otx_ips||[]).length+((DATA.threat_intelligence||{}).otx_domains||[]).length+((DATA.threat_intelligence||{}).shodan||[]).length+' hit(s)', fn:renderThreatIntelligence, col:false},
+    {id:'sigma',     title:'17. Sigma Rule Matches', badge:(m.sigma_matches||0)+' match(es)', fn:renderSigma, col:true},
+    {id:'pgraph',    title:'18. Process Graph Analysis (NetworkX)', badge:(m.graph_anomalies||0)+' anomaly/anomalies', fn:renderProcessGraph, col:true},
+    {id:'stats',     title:'19. Statistical Anomaly Detection', badge:(m.stat_outliers||0)+' outlier(s)', fn:renderStatistical, col:true},
+    {id:'yara',      title:'20. YARA Rule Matches', badge:(m.yara_matches||0)+' match(es)', fn:renderYara, col:true},
+    {id:'atkenrich', title:'21. ATT\u0026CK Enrichment (MITRE)', badge:(function(){var e=DATA.mitre_enrichment||{};var g=(e.groups||[]).length,m=(e.mitigations||[]).length;return g+m>0?g+' group(s) \u00B7 '+m+' mitigation(s)':null;})(), fn:renderAttackEnrichment, col:true},
+    {id:'ioc',       title:'22. IOC Extraction (iocextract)', badge:(function(){var iocs=DATA.ioc_extraction||{};var t=0;Object.values(iocs).forEach(function(v){if(Array.isArray(v))t+=v.length;});return t>0?t+' IOC(s)':null;})(), fn:renderIOC, col:true},
+    {id:'notes',     title:'23. Analyst Notes', badge:(DATA.analyst_notes||[]).length+' note(s)', fn:renderAnalystNotes, col:false},
+    {id:'lsass',     title:'24. LSASS Access', badge:(DATA.lsass||[]).length+' hit(s)', fn:renderLsass, col:true},
+    {id:'cmdline',   title:'25. Command Line Analysis', badge:(function(){var c=DATA.cmdline_analysis||{};return ((c.findings||[]).length+(c.high_entropy||[]).length)||null;})(), fn:renderCmdline, col:true},
+    {id:'temporal',  title:'26. Temporal Sequences', badge:(DATA.temporal_sequences||[]).length>0?(DATA.temporal_sequences||[]).length+' sequence(s)':null, fn:renderTemporal, col:true},
+    {id:'tasks',     title:'27. Scheduled Tasks', badge:(DATA.tasks||[]).length+' task(s)', fn:renderTasks, col:true},
     {id:'diagnosis', title:'Diagnosis & Verdict', badge:null, fn:renderDiagnosis, col:false},
   ];
 
@@ -1417,7 +1565,7 @@ function renderAll(){
   var fwList=Object.entries(fw).filter(function(e){return e[1];}).map(function(e){return e[0];}).join(', ');
   document.getElementById('footer').innerHTML='SentinelOne DV Analyzer v'+esc(meta.analyzer_version||meta.version||'3.0')+' &nbsp;&#183;&nbsp; Behavioral analysis &nbsp;&#183;&nbsp; '+esc(meta.generated_at||'')+
     (fwList?' &nbsp;&#183;&nbsp; Frameworks: '+esc(fwList):'')+
-    '<br><span style="opacity:.5">Keyboard: T = toggle theme &nbsp;&#183;&nbsp; &#9112; = print</span>';
+    '<br><span style="opacity:.5">Keyboard: T = toggle theme &nbsp;&#183;&nbsp; Ctrl+K = search &nbsp;&#183;&nbsp; &#9112; = print</span>';
 
   setTimeout(function(){animateCounters();animateBars();drawGauge();},100);
 }
@@ -1445,6 +1593,87 @@ else renderAll();
   document.addEventListener('mouseout',function(e){
     if(cur&&!cur.contains(e.relatedTarget)){box.style.opacity=0;cur=null;}
   });
+})();
+
+// ── GLOBAL SEARCH (Ctrl+K) ──
+(function(){
+  var overlay=document.createElement('div');
+  overlay.id='search-overlay';
+  overlay.style.cssText='display:none;position:fixed;inset:0;background:rgba(0,0,0,.5);z-index:9999;justify-content:center;padding-top:15vh';
+  overlay.innerHTML='<div style="background:var(--bg-card);border:1px solid var(--border);border-radius:12px;width:90%;max-width:540px;height:auto;max-height:60vh;display:flex;flex-direction:column;box-shadow:var(--shadow-lg)"><div style="padding:12px 16px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px"><span style="color:var(--dim)">&#128269;</span><input id="search-input" type="text" placeholder="Search sections, indicators, IOCs..." style="flex:1;background:transparent;border:none;outline:none;color:var(--text);font-size:15px;font-family:inherit" autocomplete="off"/><kbd style="font-size:10px;padding:2px 6px;border:1px solid var(--border);border-radius:4px;color:var(--dim)">ESC</kbd></div><div id="search-results" style="overflow-y:auto;padding:8px;flex:1"></div></div>';
+  document.body.appendChild(overlay);
+  overlay.addEventListener('click',function(e){if(e.target===overlay){overlay.style.display='none';}});
+  document.addEventListener('keydown',function(e){
+    if((e.ctrlKey||e.metaKey)&&e.key==='k'){e.preventDefault();overlay.style.display='flex';var inp=document.getElementById('search-input');inp.value='';inp.focus();document.getElementById('search-results').innerHTML='';}
+    if(e.key==='Escape'&&overlay.style.display==='flex'){overlay.style.display='none';}
+  });
+  var searchTimer=null;
+  document.addEventListener('input',function(e){
+    if(e.target.id!=='search-input')return;
+    clearTimeout(searchTimer);
+    searchTimer=setTimeout(function(){
+      var q=e.target.value.toLowerCase().trim();
+      var res=document.getElementById('search-results');
+      if(!q){res.innerHTML='';return;}
+      var hits=[];
+      document.querySelectorAll('.sec').forEach(function(sec){
+        var title=sec.querySelector('.sec-hdr');
+        var body=sec.querySelector('.sec-body');
+        if(!body)return;
+        var txt=body.textContent.toLowerCase();
+        var idx=txt.indexOf(q);
+        if(idx>=0||title.textContent.toLowerCase().indexOf(q)>=0){
+          var snippet=txt.substring(Math.max(0,idx-40),idx+q.length+60).trim();
+          hits.push({id:sec.id,title:title?title.textContent.trim():'',snippet:snippet});
+        }
+      });
+      if(!hits.length){res.innerHTML='<div style="color:var(--dim);padding:16px;text-align:center">No results for "'+esc(q)+'"</div>';return;}
+      var h='';
+      hits.slice(0,12).forEach(function(hit){
+        h+='<div class="search-hit" data-target="'+hit.id+'" style="padding:8px 12px;border-radius:6px;cursor:pointer;margin-bottom:2px"><div style="font-weight:600;font-size:13px;color:var(--text)">'+esc(hit.title)+'</div>';
+        if(hit.snippet)h+='<div style="font-size:11px;color:var(--dim);margin-top:2px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">...'+esc(hit.snippet)+'...</div>';
+        h+='</div>';
+      });
+      res.innerHTML=h;
+      res.querySelectorAll('.search-hit').forEach(function(el){
+        el.addEventListener('click',function(){
+          var target=document.getElementById(el.dataset.target);
+          if(target){overlay.style.display='none';target.scrollIntoView({behavior:'smooth',block:'start'});var body=target.querySelector('.sec-body');if(body&&body.style.display==='none'){toggleSection(el.dataset.target.replace('sec-',''));}}
+        });
+        el.addEventListener('mouseenter',function(){el.style.background='var(--surface2)';});
+        el.addEventListener('mouseleave',function(){el.style.background='';});
+      });
+    },150);
+  });
+})();
+
+// ── TABLE SORTING ──
+(function(){
+  document.addEventListener('click',function(e){
+    var th=e.target.closest('th[data-sortable]');
+    if(!th)return;
+    var table=th.closest('table');if(!table)return;
+    var idx=Array.prototype.indexOf.call(th.parentNode.children,th);
+    var tbody=table.querySelector('tbody');if(!tbody)return;
+    var rows=Array.prototype.slice.call(tbody.querySelectorAll('tr'));
+    var asc=th.dataset.sortDir!=='asc';
+    th.parentNode.querySelectorAll('th').forEach(function(t){delete t.dataset.sortDir;t.style.cursor='pointer';});
+    th.dataset.sortDir=asc?'asc':'desc';
+    rows.sort(function(a,b){
+      var av=(a.children[idx]||{}).textContent||'';
+      var bv=(b.children[idx]||{}).textContent||'';
+      var an=parseFloat(av),bn=parseFloat(bv);
+      if(!isNaN(an)&&!isNaN(bn))return asc?an-bn:bn-an;
+      return asc?av.localeCompare(bv):bv.localeCompare(av);
+    });
+    rows.forEach(function(r){tbody.appendChild(r);});
+  });
+  // Auto-add sortable attribute to all table headers after render
+  setTimeout(function(){
+    document.querySelectorAll('#sections table thead th').forEach(function(th){
+      th.setAttribute('data-sortable','');th.style.cursor='pointer';th.title='Click to sort';
+    });
+  },200);
 })();
 </script>
 </body>

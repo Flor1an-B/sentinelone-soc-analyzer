@@ -2741,6 +2741,65 @@ class ScriptAnalyzer:
             "length":  len(s["content"]),
         } for s in self.scripts]
 
+    def decode_payloads(self) -> list:
+        """Decode hex/base64 payloads found in scripts and return decoded content."""
+        import binascii
+        decoded = []
+        seen = set()
+        for script in self.scripts:
+            content = script["content"]
+            # 1. Hex-encoded payloads (common in PS obfuscation)
+            for m in re.finditer(r"['\"]([0-9A-Fa-f]{80,})['\"]", content):
+                hex_str = m.group(1)
+                h = hash(hex_str[:200])
+                if h in seen:
+                    continue
+                seen.add(h)
+                try:
+                    raw = binascii.unhexlify(hex_str)
+                    text = raw.decode("utf-8", errors="replace")
+                    if text.count("\ufffd") / max(len(text), 1) < 0.3:
+                        # Extract key artifacts from decoded text
+                        urls = re.findall(r"https?://[^\s'\"<>]+", text)
+                        paths = re.findall(r"[A-Z]:\\[^\s'\"]+", text)
+                        decoded.append({
+                            "encoding":  "hex",
+                            "length":    len(hex_str),
+                            "decoded":   text[:5000],
+                            "urls":      urls[:10],
+                            "paths":     paths[:10],
+                            "app":       script["app"],
+                            "timestamp": script["timestamp"],
+                        })
+                except Exception:
+                    pass
+            # 2. Base64-encoded commands (-EncodedCommand / FromBase64String)
+            for m in re.finditer(r'(?:-[Ee](?:nc|ncodedCommand))\s+([A-Za-z0-9+/]{40,}={0,2})', content):
+                b64 = m.group(1)
+                h = hash(b64[:200])
+                if h in seen:
+                    continue
+                seen.add(h)
+                try:
+                    import base64
+                    raw = base64.b64decode(b64)
+                    # PowerShell -EncodedCommand uses UTF-16LE
+                    text = raw.decode("utf-16-le", errors="replace")
+                    if text.count("\ufffd") / max(len(text), 1) < 0.3:
+                        urls = re.findall(r"https?://[^\s'\"<>]+", text)
+                        decoded.append({
+                            "encoding":  "base64",
+                            "length":    len(b64),
+                            "decoded":   text[:5000],
+                            "urls":      urls[:10],
+                            "paths":     [],
+                            "app":       script["app"],
+                            "timestamp": script["timestamp"],
+                        })
+                except Exception:
+                    pass
+        return decoded
+
 
 class ModuleAnalyzer:
     """Analyse les DLLs chargées pour détecter des comportements suspects."""
@@ -6078,9 +6137,11 @@ class ReportGenerator:
         }
 
         # ── Scripts ──
+        decoded_payloads = self.scripts.decode_payloads()
         scripts_data = {
-            "summaries": self.scripts.get_all_scripts_summary(),
-            "findings":  script_findings,
+            "summaries":        self.scripts.get_all_scripts_summary(),
+            "findings":         script_findings,
+            "decoded_payloads": decoded_payloads,
         }
 
         # ── Modules ──
@@ -6389,6 +6450,139 @@ class ReportGenerator:
                         "hostnames": res.get("hostnames",[]),
                     })
 
+        # ── C2 Infrastructure (correlate network + IOC URLs + DNS) ──
+        c2_infra = []
+        _ioc_urls = ioc_data.get("urls", []) if ioc_data else []
+        # Also extract URLs from decoded payloads
+        for dp in decoded_payloads:
+            for u in dp.get("urls", []):
+                if u not in _ioc_urls:
+                    _ioc_urls.append(u)
+        # Group by domain
+        _c2_domains = {}
+        for url in _ioc_urls:
+            m = re.match(r'https?://([^/:]+)', url)
+            if not m:
+                continue
+            domain = m.group(1).lower()
+            # Skip safe domains
+            if any(s in domain for s in ("microsoft.com", "windows.com", "windowsupdate.com",
+                                          "office.com", "live.com", "bing.com", "google.com",
+                                          "gstatic.com", "github.com", "githubusercontent.com")):
+                continue
+            if domain not in _c2_domains:
+                _c2_domains[domain] = {"domain": domain, "urls": [], "ips": [],
+                                       "observed": False, "process": ""}
+            if url not in _c2_domains[domain]["urls"]:
+                _c2_domains[domain]["urls"].append(url)
+        # Correlate with DNS and network connections
+        for domain, info in _c2_domains.items():
+            # DNS resolution
+            resolved_ips = self.net.dns_map.get(domain, [])
+            info["ips"].extend(resolved_ips)
+            # Check if domain matches any external connection (via ip_to_domain)
+            for conn in self.net.get_unique_external():
+                conn_domain = self.net.ip_to_domain.get(conn["dst_ip"], "")
+                if conn_domain == domain or conn["dst_ip"] in resolved_ips:
+                    info["observed"] = True
+                    info["process"] = conn.get("process_short", "")
+                    if conn["dst_ip"] not in info["ips"]:
+                        info["ips"].append(conn["dst_ip"])
+        # Add unmatched external connections (IP without domain)
+        for conn in self.net.get_unique_external():
+            dst = conn["dst_ip"]
+            matched = any(dst in info["ips"] for info in _c2_domains.values())
+            if not matched:
+                _c2_domains[f"ip:{dst}"] = {
+                    "domain": "", "urls": [],
+                    "ips": [dst], "observed": True,
+                    "process": conn.get("process_short", ""),
+                    "port": conn.get("dst_port", ""),
+                    "protocol": conn.get("protocol", ""),
+                }
+        c2_infra = [v for v in _c2_domains.values() if v.get("urls") or v.get("observed")]
+
+        # ── Kill Chain (ordered tactic sequence from indicators) ──
+        _TACTIC_ORDER = ["Reconnaissance", "Resource Development", "Initial Access",
+                         "Execution", "Persistence", "Privilege Escalation",
+                         "Defense Evasion", "Credential Access", "Discovery",
+                         "Lateral Movement", "Collection", "Command and Control",
+                         "Exfiltration", "Impact"]
+        # Build technique→tactic lookup from heatmap
+        _tech_to_tactic = {}
+        for tac, tids in heatmap.items():
+            for tid in tids:
+                _tech_to_tactic.setdefault(tid, tac)
+        kill_chain = []
+        _seen_tactics = set()
+        for ind in sorted(indicators_enriched, key=lambda x: x.get("timestamp", "")):
+            for tech in ind.get("mitre_techniques", []):
+                tid = tech.get("id", "")
+                tactic = _tech_to_tactic.get(tid, "")
+                if not tactic or tactic in _seen_tactics:
+                    continue
+                _seen_tactics.add(tactic)
+                kill_chain.append({
+                    "tactic":    tactic,
+                    "technique": tid,
+                    "name":      tech.get("name", ""),
+                    "indicator": ind.get("name", ""),
+                    "timestamp": ind.get("timestamp", ""),
+                })
+        # Sort by MITRE kill chain order
+        kill_chain.sort(key=lambda x: _TACTIC_ORDER.index(x["tactic"])
+                        if x["tactic"] in _TACTIC_ORDER else 99)
+
+        # ── Analyst Notes (discrepancies, artifact gaps, observations) ──
+        analyst_notes = []
+        # 1. Persistence discrepancy
+        _has_persistence_indicator = any(
+            "persist" in (ind.get("name", "") + ind.get("category", "")).lower()
+            for ind in indicators_enriched)
+        _has_registry_persistence = bool(registry_data.get("persistence_hits"))
+        if _has_persistence_indicator and not _has_registry_persistence:
+            analyst_notes.append({
+                "type": "discrepancy", "severity": "MOYEN",
+                "title": "Persistence detected but no registry write observed",
+                "detail": "Behavioral indicators flagged persistence activity, but no "
+                          "registry persistence keys were captured in telemetry. The attempt "
+                          "may have been blocked by S1 or executed via non-registry methods (WMI, scheduled task).",
+            })
+        # 2. Artifact gaps — intended downloads not observed
+        _intended_paths = set()
+        for dp in decoded_payloads:
+            for p in dp.get("paths", []):
+                _intended_paths.add(p.lower().rstrip("\\"))
+        _actual_paths = set()
+        for _ops in self.files.operations.values():
+            for _fop in _ops:
+                fp = (_fop.get("path", "") or "").lower()
+                if fp:
+                    _actual_paths.add(fp)
+        for intended in _intended_paths:
+            # Check if any actual file starts with this intended path
+            found = any(a.startswith(intended) or intended in a for a in _actual_paths)
+            if not found and ("download" in intended or "public" in intended
+                              or "temp" in intended or "appdata" in intended):
+                analyst_notes.append({
+                    "type": "artifact_gap", "severity": "INFO",
+                    "title": f"Intended path not observed: {intended}",
+                    "detail": "The decoded payload references this path but no file operations "
+                              "were captured there. The attack may have been interrupted before "
+                              "this stage or S1 blocked the operation.",
+                })
+        # 3. Unsigned child processes
+        _unsigned_children = [c for c in self.proc.get_children()
+                              if c.get("signed") and c["signed"] != "signed"]
+        if _unsigned_children:
+            names = [Path((c.get("cmdline","").replace('"','').split() or ["?"])[0]).name
+                     for c in _unsigned_children[:3]]
+            analyst_notes.append({
+                "type": "observation", "severity": "ELEVE",
+                "title": f"Unsigned child process(es): {', '.join(names)}",
+                "detail": "Unsigned executables spawned within the storyline warrant investigation.",
+            })
+
         # ── Verdict (with recommendations) ──
         verdict = dict(self.verdict)
         verdict["recommendations"] = self._generate_recommendations()
@@ -6438,6 +6632,9 @@ class ReportGenerator:
             "virustotal":            vt_data,
             "_vt_enabled":           self.vt is not None,
             "threat_intelligence":   ti_data,
+            "c2_infrastructure":     c2_infra,
+            "kill_chain":            kill_chain,
+            "analyst_notes":         analyst_notes,
         }
 
     def _section_virustotal_json(self) -> list:

@@ -7,6 +7,17 @@
 - **Target file SHA1** — new `target_file_sha1` field in identification attempts to resolve the hash of the script/file being executed (e.g., a `.vbs` or `.ps1`) from File Creation/Modification/Deletion telemetry. When unavailable (pre-existing file), the HTML clearly indicates "not captured in telemetry".
 - **SHA1 label disambiguation** — when a target script is identified, the process SHA1 row is labeled with the process name (e.g., `SHA1 (WScript.exe)`) to avoid confusion with the target file hash.
 - **File SHA1 cross-lookup** — execution chain file entries are enriched via a path→SHA1 map built from all file operations (Creation, Modification, Deletion), not just Creation events.
+- **Payload decoding** — ScriptAnalyzer `decode_payloads()` automatically decodes hex-encoded and base64 (PowerShell `-EncodedCommand`) payloads, extracting embedded URLs and file paths. Rendered in a dedicated "Decoded Payloads" HTML section.
+- **C2 Infrastructure correlation** — new section correlates IOC URLs, decoded payload URLs, DNS queries, and network connections into a unified C2 view grouped by domain/IP. Shows DNS resolution status, connection evidence, port, and protocol.
+- **Kill Chain visualization** — ATT&CK techniques from behavioral indicators are ordered by MITRE kill chain phase (Reconnaissance → Impact), displayed as a visual flow with tactic-colored cards and arrow connectors.
+- **Analyst Notes** — automated detection of persistence/registry discrepancies, artifact gaps (intended file paths vs observed operations), and unsigned child processes. Surfaced as actionable alerts.
+- **Gauge color zones** — verdict gauge SVG now shows colored background arcs (green 0-7, yellow 8-11, orange 12-15, red 16-20) for instant visual scoring context.
+- **IOC bulk export** — "Copy All IOCs" button copies all extracted IOCs (hashes, IPs, URLs, emails) to clipboard in a categorized text format.
+- **TI external links** — IOC items now include clickable links to VirusTotal, AbuseIPDB (IPs), and URLhaus (URLs) for one-click threat intelligence lookup.
+- **Global search (Ctrl+K)** — full-text search across all report sections with instant results, click-to-navigate, and section auto-expand.
+- **Table sorting** — all table headers are clickable for ascending/descending sort (numeric and alphabetical).
+- **Event distribution bar** — Timeline section shows a colored horizontal bar chart of event type distribution with legend.
+- **Mobile responsive** — improved CSS for 768px and 480px breakpoints: smaller fonts, compact spacing, hidden gauge on very small screens.
 
 ### Fixed
 - **Malicious Patterns truncation** — ScriptAnalyzer context window increased from `500+2000` to `1000+8000` chars around the match, revealing full decoded payloads instead of hex gibberish.
@@ -14,6 +25,7 @@
 
 ### Improved
 - **Execution Chain overflow** — child processes, network connections, and file creations each capped at 10 entries with "... +N more (see Process Tree section)" overflow message to keep the chain readable on large storylines (100+ children).
+- **HTML dashboard** — 27 sections expanded to 31 sections (added Kill Chain, Decoded Payloads, C2 Infrastructure, Analyst Notes). Section numbering updated throughout.
 
 ## [3.2.0] - 2026-03-10
 
