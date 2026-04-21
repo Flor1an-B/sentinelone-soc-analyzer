@@ -28,6 +28,7 @@ import hashlib
 import json
 import os
 import shutil
+import ssl
 import sys
 import threading
 import time
@@ -35,6 +36,18 @@ import urllib.request
 import urllib.error
 import zipfile
 from pathlib import Path
+
+# HTTPS CA bundle — mirror the analyzer's behavior so GitHub releases /
+# raw downloads succeed on macOS python.org installers that never ran
+# "Install Certificates.command". See s1_analyzer.py for full rationale.
+try:
+    import certifi as _certifi
+    _ssl_ctx = ssl.create_default_context(cafile=_certifi.where())
+    urllib.request.install_opener(
+        urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ssl_ctx))
+    )
+except ImportError:
+    pass
 
 # -- Repository Configuration --
 REPO_OWNER = "Flor1an-B"
