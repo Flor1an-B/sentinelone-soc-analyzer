@@ -7,3 +7,4 @@ pyod>=1.0               # Statistical anomaly detection (IsolationForest)
 yara-python>=4.3        # YARA pattern matching (prebuilt wheels for Python 3.10-3.13)
 iocextract>=1.13        # IOC extraction from scripts/cmdlines
 mitreattack-python>=0.2 # ATT&CK enrichment (groups, mitigations)
+certifi>=2023.7         # CA bundle for TLS verification (fixes SSL errors on macOS)

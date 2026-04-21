@@ -25,11 +25,30 @@ Usage :
   python s1_analyzer.py <fichier.csv> --html  # HTML report
 """
 import csv, re, sys, json, argparse, io, time, threading, urllib.request, urllib.error, socket
-import zipfile, shutil
+import ssl, zipfile, shutil
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 from io import StringIO
+
+# ---------------------------------------------------------------------------
+# HTTPS CA BUNDLE — macOS & frozen Python builds frequently ship without a
+# usable system trust store (python.org installers require the separate
+# "Install Certificates.command" step; absence triggers SSL:
+# CERTIFICATE_VERIFY_FAILED on every outbound call — VirusTotal,
+# MalwareBazaar, OTX, Shodan, GitHub). When `certifi` is available we
+# install a global opener so every urlopen() in the analyzer picks it up
+# without threading contexts through each call site.
+# ---------------------------------------------------------------------------
+try:
+    import certifi as _certifi
+    _ssl_ctx = ssl.create_default_context(cafile=_certifi.where())
+    urllib.request.install_opener(
+        urllib.request.build_opener(urllib.request.HTTPSHandler(context=_ssl_ctx))
+    )
+    HAS_CERTIFI = True
+except ImportError:
+    HAS_CERTIFI = False
 
 # ---------------------------------------------------------------------------
 # OPTIONAL FRAMEWORK IMPORTS (graceful degradation if not installed)
