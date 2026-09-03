@@ -580,9 +580,11 @@ def _update_yara() -> tuple:
                     continue  # Zip Slip protection
                 content = zf.read(member)
                 out.write_bytes(content)
-                # Count individual rules inside the monolithic file
+                # Count individual rules across all extracted .yar/.yara files
+                # (was overwritten per-member instead of accumulated, so a
+                # package shipping more than one file would under-report).
                 import re as _re
-                count = len(_re.findall(rb'^rule\s+\w+', content, _re.MULTILINE))
+                count += len(_re.findall(rb'^rule\s+\w+', content, _re.MULTILINE))
         tmp.unlink()
         print(f"      {C.green('OK')} Extracted {C.bold(str(count))} YARA rules "
               f"to {C.dim(str(dest))}                            ")

@@ -6,7 +6,7 @@ Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 2
 
 ![Python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-3.3.2-orange)
+![Version](https://img.shields.io/badge/version-3.4.0-orange)
 
 ---
 
@@ -96,6 +96,7 @@ python s1_analyzer.py [OPTIONS] <csv_file>
 | `--no-stats` | Disable statistical anomaly detection |
 | `--no-attack` | Disable ATT&CK enrichment |
 | `--no-color` | Disable ANSI colors |
+| `--fail-threshold N` | Exit code 1 if the verdict score (0-20) is `>= N` (CI/automation gates) |
 
 ### Examples
 
@@ -242,9 +243,11 @@ alert_20260310_143000/
 +-- report.html     # Self-contained interactive dashboard
 ```
 
-### JSON Sections (30)
+### JSON Sections (31)
 
-`meta` - `identification` - `verdict` - `metrics` - `timeline` - `behavioral_indicators` - `severity_distribution` - `attack_chains` - `mitre_attack` - `scripts` - `modules` - `network` - `process_tree` - `files` - `registry` - `tasks` - `lsass` - `cmdline_analysis` - `temporal_sequences` - `sigma_matches` - `process_graph` - `statistical_analysis` - `yara_matches` - `mitre_enrichment` - `ioc_extraction` - `virustotal` - `threat_intelligence` - `c2_infrastructure` - `kill_chain` - `analyst_notes`
+`meta` - `identification` - `data_quality` - `verdict` - `metrics` - `timeline` - `behavioral_indicators` - `severity_distribution` - `attack_chains` - `mitre_attack` - `scripts` - `modules` - `network` - `process_tree` - `files` - `registry` - `tasks` - `lsass` - `cmdline_analysis` - `temporal_sequences` - `sigma_matches` - `process_graph` - `statistical_analysis` - `yara_matches` - `mitre_enrichment` - `ioc_extraction` - `virustotal` - `threat_intelligence` - `c2_infrastructure` - `kill_chain` - `analyst_notes`
+
+`data_quality` surfaces CSV schema warnings, skipped rows, and Sigma/YARA/ATT&CK rule load-error counts — check it (or the HTML data-quality banner) before trusting a verdict on an unusual CSV export.
 
 ## Dependencies
 
@@ -262,6 +265,15 @@ alert_20260310_143000/
 ```bash
 pip install -r requirements.txt
 ```
+
+## Tests
+
+```bash
+pip install pytest
+pytest tests/ -v
+```
+
+Covers URL cleaning/IOC extraction, `EventParser`/`CsvParser`, the Sigma event-type index, MITRE technique lookups, and an end-to-end `analyze()` + HTML generation smoke test (including an XSS regression guard) against the sample CSVs in `A_Analyser/`.
 
 ### Note on yara-python (Windows)
 

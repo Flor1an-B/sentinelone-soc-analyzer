@@ -92,7 +92,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # VERSION & METADATA
 # ---------------------------------------------------------------------------
-__version__  = "3.3.2"
+__version__  = "3.4.0"
 __author__   = "Florian Bertaux"
 __tool__     = "S1 Analyzer"
 
@@ -104,9 +104,13 @@ ATTACK_BUNDLE = DATA_DIR / "attack" / "enterprise-attack.json"
 SIGMA_DIR     = DATA_DIR / "sigma" / "rules"
 YARA_DIR      = DATA_DIR / "yara" / "rules"
 
-# Forcer UTF-8 sur la sortie standard Windows (évite UnicodeEncodeError cp1252)
+# Forcer UTF-8 sur stdout/stderr Windows (évite UnicodeEncodeError cp1252) —
+# la bannière/spinners écrivent des caractères Unicode (✓ ✗ ⚠ ─ ═ →) sur
+# stderr, qui doit donc être reconfiguré au même titre que stdout.
 if sys.stdout.encoding and sys.stdout.encoding.lower() not in ("utf-8", "utf_8"):
     sys.stdout = io.TextIOWrapper(sys.stdout.buffer, encoding="utf-8", errors="replace")
+if sys.stderr.encoding and sys.stderr.encoding.lower() not in ("utf-8", "utf_8"):
+    sys.stderr = io.TextIOWrapper(sys.stderr.buffer, encoding="utf-8", errors="replace")
 
 # Activer les séquences ANSI sur Windows (Windows 10 1511+)
 if sys.platform == "win32":
@@ -202,6 +206,10 @@ class VirusTotalClient:
         if elapsed < 15:
             time.sleep(15 - elapsed)
         self._last_ts = time.time()
+
+    def is_cached(self, key: str) -> bool:
+        """Whether a lookup for this hash/URL will hit the cache (no rate-limit wait)."""
+        return bool(key) and key.strip().lower() in self._cache
 
     def lookup(self, sha: str) -> dict:
         if not sha or not self.api_key or sha in ("N/A", ""):
@@ -1917,8 +1925,26 @@ class EventParser:
 class CsvParser:
     """Charge et normalise un CSV SentinelOne (format DV ou SDL)."""
 
+    # Columns each parser actually reads (CsvParser._parse_dv / _parse_sdl).
+    # Used to warn the analyst when a CSV doesn't look like a real DV/SDL
+    # export instead of silently returning an empty/partial event list.
+    _DV_EXPECTED  = ["event.time", "event.type", "event.details",
+                     "agent.uuid", "src.process.user", "src.process.storyline.id"]
+    _SDL_EXPECTED = ["event.time", "event.type", "event.details",
+                     "event.source", "event.target"]
+
+    # Reset and populated by each parse_file() call; read by analyze()
+    # right after to build the report's data_quality section.
+    last_warnings: list = []
+    last_rows_total: int = 0
+    last_rows_skipped: int = 0
+
     @staticmethod
     def parse_file(filepath: str) -> list:
+        CsvParser.last_warnings     = []
+        CsvParser.last_rows_total   = 0
+        CsvParser.last_rows_skipped = 0
+
         try:
             raw = Path(filepath).read_text(encoding="utf-8-sig")
         except UnicodeDecodeError:
@@ -1934,15 +1960,33 @@ class CsvParser:
             if headers is None:
                 headers = row
                 fmt = "SDL" if "dataSource.name" in headers else "DV"
+                expected = CsvParser._SDL_EXPECTED if fmt == "SDL" else CsvParser._DV_EXPECTED
+                missing = [c for c in expected if c not in headers]
+                if missing:
+                    CsvParser.last_warnings.append(
+                        f"CSV detected as {fmt} format but missing expected column(s): "
+                        f"{', '.join(missing)} — parsing may be incomplete."
+                    )
                 continue
+            CsvParser.last_rows_total += 1
             if len(row) < 2:
+                CsvParser.last_rows_skipped += 1
                 continue
             rd = {headers[i]: row[i] for i in range(min(len(headers), len(row)))}
             if not rd.get("event.time"):
+                CsvParser.last_rows_skipped += 1
                 continue
             ev = CsvParser._parse_sdl(rd) if fmt == "SDL" else CsvParser._parse_dv(rd)
             if ev:
                 events.append(ev)
+
+        if headers is None:
+            CsvParser.last_warnings.append("CSV file has no header row — 0 events parsed.")
+        elif CsvParser.last_rows_total and not events:
+            CsvParser.last_warnings.append(
+                f"{CsvParser.last_rows_total} row(s) read but 0 events parsed — "
+                f"check the CSV export format."
+            )
 
         return events
 
@@ -3262,8 +3306,10 @@ class MitreAttackEnricher:
     """
 
     def __init__(self):
-        self._data    = None
-        self._ok      = False
+        self._data      = None
+        self._ok        = False
+        self.load_error = ""
+        self._tid_index: dict = {}
         self._load()
 
     def _load(self):
@@ -3274,8 +3320,16 @@ class MitreAttackEnricher:
         try:
             self._data = _MitreData(str(ATTACK_BUNDLE))
             self._ok   = True
-        except Exception:
-            pass
+            # Build tid -> technique once instead of re-scanning all
+            # techniques on every get_technique_info() call. First match
+            # wins per tid, mirroring the previous results[0] selection.
+            for t in self._data.get_techniques(remove_revoked_deprecated=True):
+                for r in t.get("external_references", []):
+                    ext_id = r.get("external_id")
+                    if ext_id and ext_id not in self._tid_index:
+                        self._tid_index[ext_id] = t
+        except Exception as e:
+            self.load_error = str(e)
 
     @property
     def available(self) -> bool:
@@ -3286,12 +3340,9 @@ class MitreAttackEnricher:
         if not self._ok:
             return {}
         try:
-            results = [t for t in self._data.get_techniques(remove_revoked_deprecated=True)
-                       if any(r.get("external_id") == tid
-                              for r in t.get("external_references", []))]
-            if not results:
+            tech = self._tid_index.get(tid)
+            if not tech:
                 return {}
-            tech = results[0]
             detection   = tech.get("x_mitre_detection", "")
             data_srcs   = tech.get("x_mitre_data_sources", [])
             # kill_chain_phases are KillChainPhase objects, use .phase_name
@@ -3445,6 +3496,14 @@ class SigmaEvaluator:
 
     def __init__(self):
         self._rules: list = []
+        self.load_errors: int = 0
+        # Rules indexed by relevant event type, built once at load. Rules
+        # whose category isn't in CATEGORY_MAP (or maps to an empty set,
+        # e.g. "sysmon"/"wmi_event"/"builtin" which have no direct S1
+        # equivalent) go in _unfiltered and are still evaluated against
+        # every event, matching prior behavior for those categories exactly.
+        self._by_etype: dict = defaultdict(list)
+        self._unfiltered: list = []
         self._load()
 
     def _load(self):
@@ -3464,7 +3523,16 @@ class SigmaEvaluator:
                 rule["_path"] = str(yf)
                 self._rules.append(rule)
             except Exception:
+                self.load_errors += 1
                 continue
+
+        for rule in self._rules:
+            ets = self.CATEGORY_MAP.get(rule.get("_cat", ""))
+            if ets:
+                for et in ets:
+                    self._by_etype[et].append(rule)
+            else:
+                self._unfiltered.append(rule)
 
     @property
     def available(self) -> bool:
@@ -3620,11 +3688,8 @@ class SigmaEvaluator:
         etype = ev["event_type"]
         norm  = self._norm(ev)
         hits  = []
-        for rule in self._rules:
-            cat          = rule.get("_cat", "")
-            relevant_ets = self.CATEGORY_MAP.get(cat, set())
-            if relevant_ets and etype not in relevant_ets:
-                continue
+        candidates = self._by_etype.get(etype, []) + self._unfiltered
+        for rule in candidates:
             detection = rule.get("detection", {})
             condition  = detection.get("condition", "selection")
             named      = {}
@@ -3648,7 +3713,7 @@ class SigmaEvaluator:
                     "description": rule.get("description", ""),
                     "level":       lvl,
                     "mitre":       mitre,
-                    "category":    cat,
+                    "category":    rule.get("_cat", ""),
                     "tags":        tags,
                 })
         return hits
@@ -3862,7 +3927,11 @@ class StatisticalAnalyzer:
                 X = [[r["cmd_len"], r["cmd_entr"], r["is_net"],
                       r["is_behav"], r["is_script"], r["hour"]]
                      for r in rows]
-                clf    = _IForest(contamination=0.1, random_state=42)
+                # Cap samples used to build each tree (not the events scored) so
+                # very large CSVs (100k+ events) don't slow fit() down linearly;
+                # predict()/decision_function() below still cover every row.
+                clf = _IForest(contamination=0.1, random_state=42,
+                                max_samples=min(len(X), 50000))
                 clf.fit(X)
                 scores = clf.decision_function(X)
                 labels = clf.predict(X)
@@ -3904,6 +3973,7 @@ class YaraAnalyzer:
         self._rule_sets:   dict = {}   # filename → compiled rules
         self._hits:        list = []
         self._file_count   = 0
+        self.rule_errors   = 0   # rule chunks that failed to compile (skipped, not loaded)
         self._load()
         if self._rule_sets:
             self._scan()
@@ -3917,10 +3987,15 @@ class YaraAnalyzer:
                 # Skip rules requiring external variables we cannot provide
                 if re.search(r'^\s*externals\s*:', src, re.M):
                     continue
-                # Try compiling the whole file first (fast path for small files)
+                # Try compiling the whole file first (fast path). This also
+                # succeeds directly on modern yara-python for large monolithic
+                # files (YARA Forge ships one), so count actual "rule NAME"
+                # definitions inside — not "1 file" — or loaded_count() badly
+                # under-reports (e.g. "1 YARA rule loaded" for a ~4900-rule set).
                 compiled = _yara.compile(source=src)
                 self._rule_sets[rf.name] = compiled
-                self._file_count += 1
+                n_rules = len(re.findall(r'^(?:private\s+)?rule\s+\w+', src, re.M))
+                self._file_count += n_rules or 1
             except Exception:
                 # Monolithic files (YARA Forge): split into individual rules
                 # and compile each one separately, skipping failures
@@ -3966,6 +4041,7 @@ class YaraAnalyzer:
                         self._rule_sets[key] = compiled
                         loaded += 1
                     except Exception:
+                        self.rule_errors += 1
                         continue
         if loaded:
             self._file_count += loaded
@@ -4331,7 +4407,6 @@ class IndicatorContextualizer:
             "reasoning":   reasoning if not is_fp else fp_reason,
             "is_fp":       is_fp,
             "mitre":       ind.get("mitre_techniques", db.get("mitre", [])),
-            "occurrences": 0,  # sera rempli par BehaviorAnalyzer
         }
 
     def get_confidence_bonus(self, ind: dict) -> int:
@@ -4934,7 +5009,7 @@ class ReportGenerator:
                  lsass=None, cmdline_an=None, temporal=None,
                  sigma=None, process_graph=None, stats=None,
                  yara_an=None, mitre_enricher=None, ioc_an=None,
-                 correlation=None):
+                 correlation=None, data_quality=None):
         self.events    = events
         self.proc      = proc
         self.behav     = behav
@@ -4962,6 +5037,7 @@ class ReportGenerator:
         self.mitre_enricher = mitre_enricher
         self.ioc_an       = ioc_an
         self.corr         = correlation
+        self.data_quality = data_quality or {}
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -6845,6 +6921,7 @@ class ReportGenerator:
                 },
             },
             "identification":        identification,
+            "data_quality":          self.data_quality,
             "verdict":               verdict,
             "metrics":               metrics,
             "timeline":              timeline,
@@ -6898,6 +6975,10 @@ class ReportGenerator:
 
         results = []
         seen = set()
+        _n_vt_hashes = len({sha for _, _, sha in to_check[:10] if not self.vt.is_cached(sha)})
+        if _n_vt_hashes:
+            print(f"  {C.info('[*]')} Checking {_n_vt_hashes} hash(es) against VirusTotal "
+                  f"(rate-limited to 4/min, ~{_fmt_duration(_n_vt_hashes * 15)})...", file=sys.stderr)
         for role, name, sha in to_check[:10]:
             if sha in seen:
                 continue
@@ -6921,6 +7002,15 @@ class ReportGenerator:
                          "digicert.com", "verisign.com", "symantec.com"}
         if self.ioc_an and hasattr(self.ioc_an, 'get_iocs'):
             ioc_urls = self.ioc_an.get_iocs().get("urls", [])
+            _n_vt_urls = 0
+            for _u in ioc_urls[:10]:
+                _u = _u if isinstance(_u, str) else str(_u)
+                _dm = re.search(r'https?://([^/:]+)', _u)
+                if _dm and not any(_dm.group(1).lower().endswith(sd) for sd in _safe_domains):
+                    _n_vt_urls += 1
+            if _n_vt_urls:
+                print(f"  {C.info('[*]')} Checking {_n_vt_urls} URL(s) against VirusTotal "
+                      f"(rate-limited to 4/min, ~{_fmt_duration(_n_vt_urls * 15)})...", file=sys.stderr)
             for url in ioc_urls[:10]:
                 u = url if isinstance(url, str) else str(url)
                 # Extract domain
@@ -8584,15 +8674,13 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
 
     t_total = time.time()
 
-    # Count total steps for progress tracking
-    total_steps = 16  # base analyzers
-    if enable_sigma:  total_steps += 1
-    if enable_graph:  total_steps += 1
-    if enable_stats:  total_steps += 1
-    if enable_yara:   total_steps += 1
-    if enable_attack: total_steps += 1
-    total_steps += 3  # IOC + verdict + report
-    if ip_enrich:     total_steps += 1
+    # Progress bar tracks Phase 1 (core analysis) only: 11 core analyzers +
+    # correlation + contextualization + temporal sequences + IOC extraction.
+    # Phases 2-4 (Sigma/YARA/graph/stats/ATT&CK, verdict, report) have their
+    # own "Phase N/4" headers and use spinners instead, so they are not
+    # counted here — including them previously inflated the denominator and
+    # made the bar stall well short of 100%.
+    total_steps = 15
     step = 0
 
     # ── Phase 1: Loading ──
@@ -8604,7 +8692,12 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
     t0 = time.time()
     events = CsvParser.parse_file(filepath)
     elapsed = time.time() - t0
+    csv_warnings     = list(CsvParser.last_warnings)
+    csv_rows_total   = CsvParser.last_rows_total
+    csv_rows_skipped = CsvParser.last_rows_skipped
     sp.stop(f"{C.bold(str(len(events)))} events loaded from {C.dim(Path(filepath).name)} {C.dim(f'({_fmt_duration(elapsed)})')}")
+    for w in csv_warnings:
+        print(f"  {C.high('[!]')} {w}", file=sys.stderr)
     print(file=sys.stderr)
 
     # ── Phase 2: Core analyzers ──
@@ -8673,7 +8766,6 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
 
     sigma = None
     if enable_sigma:
-        step += 1
         sp = _Spinner("Loading Sigma rules...").start()
         t0 = time.time()
         sigma = SigmaEvaluator()
@@ -8685,7 +8777,6 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
 
     process_graph = None
     if enable_graph:
-        step += 1
         sp = _Spinner("Building process graph (NetworkX)...").start()
         t0 = time.time()
         process_graph = ProcessGraphAnalyzer(events)
@@ -8697,7 +8788,6 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
 
     stats = None
     if enable_stats:
-        step += 1
         sp = _Spinner("Statistical anomaly analysis...").start()
         t0 = time.time()
         stats = StatisticalAnalyzer(events)
@@ -8706,7 +8796,6 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
 
     yara_an = None
     if enable_yara:
-        step += 1
         sp = _Spinner("Loading YARA rules...").start()
         t0 = time.time()
         yara_an = YaraAnalyzer(events)
@@ -8718,7 +8807,6 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
 
     mitre_enricher = None
     if enable_attack:
-        step += 1
         sp = _Spinner("Loading ATT&CK enrichment...").start()
         t0 = time.time()
         mitre_enricher = MitreAttackEnricher()
@@ -8734,7 +8822,6 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
     print(f"  {C.bold('Phase 3/4')} {C.dim('- Verdict computation')}", file=sys.stderr)
     print(file=sys.stderr)
 
-    step += 1
     sp = _Spinner("Computing verdict...").start()
     t0 = time.time()
     engine = VerdictEngine(proc, behav, net, files, reg, scripts,
@@ -8750,7 +8837,6 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
     # Optional IP geolocation enrichment
     ip_info = {}
     if ip_enrich:
-        step += 1
         ext_ips = [d["dst_ip"] for d in net.get_unique_external()]
         if ext_ips:
             sp = _Spinner(f"Enriching {len(ext_ips)} IPs (geolocation)...").start()
@@ -8766,9 +8852,18 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
     print(f"  {C.bold('Phase 4/4')} {C.dim('- Report generation')}", file=sys.stderr)
     print(file=sys.stderr)
 
-    step += 1
     sp = _Spinner("Generating report...").start()
     t0 = time.time()
+
+    data_quality = {
+        "csv_warnings":       csv_warnings,
+        "csv_rows_total":     csv_rows_total,
+        "csv_rows_skipped":   csv_rows_skipped,
+        "sigma_load_errors":  sigma.load_errors if sigma else 0,
+        "yara_rule_errors":   yara_an.rule_errors if yara_an else 0,
+        "attack_load_error":  mitre_enricher.load_error if mitre_enricher else "",
+    }
+
     report = ReportGenerator(events, proc, behav, net, files, reg,
                              scripts, modules, tasks, timeline, ctx, verdict,
                              vt_client=vt_client, ip_info=ip_info,
@@ -8778,7 +8873,8 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
                              temporal=temporal, sigma=sigma,
                              process_graph=process_graph, stats=stats,
                              yara_an=yara_an, mitre_enricher=mitre_enricher,
-                             ioc_an=ioc_an, correlation=correlation)
+                             ioc_an=ioc_an, correlation=correlation,
+                             data_quality=data_quality)
 
     if output_report:
         result = report.generate_json()
@@ -8895,6 +8991,9 @@ def main():
                         help="AlienVault OTX API key (free at otx.alienvault.com)")
     parser.add_argument("--shodan-key",  metavar="API_KEY",
                         help="Shodan API key (shodan.io)")
+    parser.add_argument("--fail-threshold", type=int, metavar="N", default=None,
+                        help="Exit with code 1 if the normalized verdict score (0-20) is >= N "
+                             "(for CI/automation gates, e.g. --fail-threshold 12)")
     args = parser.parse_args()
 
     if args.no_color or (args.output and not args.html):
@@ -9009,6 +9108,13 @@ def main():
     elif args.html and args.output and html_content:
         Path(args.output).write_text(html_content, encoding="utf-8")
         print(f"  {C.ok('[+]')} HTML also written to {args.output}", file=sys.stderr)
+
+    if args.fail_threshold is not None:
+        verdict_score = data.get("verdict", {}).get("score", 0)
+        if verdict_score >= args.fail_threshold:
+            print(f"  {C.high('[!]')} Verdict score {verdict_score} >= threshold "
+                  f"{args.fail_threshold} — exiting with code 1", file=sys.stderr)
+            sys.exit(1)
 
 
 if __name__ == "__main__":

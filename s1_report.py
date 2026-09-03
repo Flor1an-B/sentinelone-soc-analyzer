@@ -18,6 +18,11 @@ from pathlib import Path
 def generate_html(data: dict) -> str:
     """Generate a self-contained HTML dashboard from analysis data."""
     json_blob = json.dumps(data, ensure_ascii=False, default=str)
+    # Escape characters that could break out of the <script> context (e.g. a
+    # "</script>" or "<!--" substring inside analyzed CSV/malware content).
+    json_blob = (json_blob.replace("<", "\\u003c")
+                           .replace(">", "\\u003e")
+                           .replace("&", "\\u0026"))
     template = _get_template()
     return template.replace("/* JSON_INJECT */", json_blob)
 
@@ -414,6 +419,7 @@ tbody tr:nth-child(even):hover td{background:var(--surface3);}
   </div>
 </div>
 
+<div id="data-quality-banner"></div>
 <div id="verdict-hero"></div>
 <div id="bento-grid" class="bento-grid"></div>
 <div id="charts-row"></div>
@@ -523,6 +529,27 @@ function drawGauge(){
 // ═══════════════════════════════════════════════════════════════
 // VERDICT HERO — matches generate_html() exactly
 // ═══════════════════════════════════════════════════════════════
+// ═══════════════════════════════════════════════════════════════
+// DATA QUALITY BANNER — only rendered when the run was degraded
+// (CSV schema warnings, rule load failures) so the analyst knows
+// the verdict may be based on incomplete detection coverage.
+// ═══════════════════════════════════════════════════════════════
+function renderDataQuality(){
+  var dq=DATA.data_quality||{};
+  var items=[];
+  (dq.csv_warnings||[]).forEach(function(w){items.push(esc(w));});
+  if(dq.sigma_load_errors)items.push(dq.sigma_load_errors+' Sigma rule(s) failed to load and were skipped.');
+  if(dq.yara_rule_errors)items.push(dq.yara_rule_errors+' YARA rule(s) failed to compile and were skipped.');
+  if(dq.attack_load_error)items.push('MITRE ATT&CK enrichment failed to load: '+esc(dq.attack_load_error));
+  if(dq.csv_rows_skipped)items.push(dq.csv_rows_skipped+' of '+(dq.csv_rows_total||0)+' CSV row(s) were skipped (missing/malformed fields).');
+  if(!items.length){document.getElementById('data-quality-banner').innerHTML='';return;}
+  var h='<div class="alert-box warn" style="max-width:1440px;margin:16px auto 0;">';
+  h+='<span>&#9888;&#65039;</span><div><strong>Data quality warning — this report may be incomplete:</strong><ul style="margin:6px 0 0 18px;padding:0;">';
+  items.forEach(function(it){h+='<li>'+it+'</li>';});
+  h+='</ul></div></div>';
+  document.getElementById('data-quality-banner').innerHTML=h;
+}
+
 function renderVerdictHero(){
   var v=DATA.verdict||{},id=DATA.identification||{},m=DATA.metrics||{},tl=DATA.timeline||{};
   var score=v.score||0,maxS=20;
@@ -1545,6 +1572,7 @@ function renderAll(){
   var meta=DATA.meta||{};
   document.getElementById('brand-sub').textContent='SOC Analysis Report \u2014 '+(meta.generated_at||'');
 
+  renderDataQuality();
   renderVerdictHero();
   renderBentoGrid();
   renderChartsRow();

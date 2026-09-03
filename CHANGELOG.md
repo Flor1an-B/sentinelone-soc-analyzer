@@ -1,5 +1,32 @@
 # Changelog
 
+## [3.4.0] - 2026-09-03
+
+### Security
+- **XSS in `report.html`** — `s1_report.generate_html` injected raw `json.dumps()` output into `const DATA = /* JSON_INJECT */;` via string replace. `json.dumps` does not escape `</script>`, so a `</script>` substring anywhere in analyzed CSV content (e.g. a decoded payload or `event.details` field) would close the script tag early and let attacker-controlled HTML/JS execute when the analyst opens the report. Fixed by escaping `<`, `>`, `&` to `\uXXXX` in the injected blob (the OWASP-recommended technique for embedding JSON in a `<script>` context) — verified end-to-end with Node that the escaped blob still evaluates to the exact original string.
+
+### Fixed
+- **Progress bar never reached 100%** — `total_steps` was computed from optional Phase 2/3 module counts (Sigma/YARA/graph/stats/ATT&CK, IP enrichment) that the Phase 1 progress bar never actually increments for (those phases use spinners instead). The bar's real ceiling was the 15 Phase-1 steps, so with all modules enabled it stalled around 60%. `total_steps` is now fixed at 15, matching the real step count; the now-dead `step += 1` increments inside Phase 2-4 were removed.
+- **YARA rule count under-reported (e.g. "1 YARA rule loaded" instead of ~4965)** — on yara-python versions that can compile the whole YARA Forge monolithic file directly (the fast path), `YaraAnalyzer._load` counted it as 1 *file* instead of counting the individual `rule NAME` definitions inside it. Matching only happened through the slower per-batch fallback path before, which is why this wasn't caught earlier. Now counts `rule` definitions in both the fast path and the batch/monolithic fallback.
+- **`s1_update.py` YARA rule count** — `_update_yara` reassigned (`=`) the rule count inside the zip-member loop instead of accumulating (`+=`), so a release package containing more than one `.yar`/`.yara` file would report only the last file's count. No observed impact today (YARA Forge Core ships a single monolithic file) but fixed for robustness.
+- **`IndicatorContextualizer.analyze()` dead `occurrences` field** — always returned `0` with a comment claiming it would be filled elsewhere; nothing ever did. Traced all 6 call sites — every one already recomputes the real count via `BehaviorAnalyzer.get_occurrence_count()` independently, so `report.json`'s actual `behavioral_indicators[].occurrences` was never affected. Removed the dead field.
+- **stderr not forced to UTF-8** — only `sys.stdout` was reconfigured; the banner/spinners print Unicode (`✓ ✗ ⚠ ─ ═ →`) to `sys.stderr`, risking `UnicodeEncodeError` on Windows consoles using cp1252. `sys.stderr` now gets the same UTF-8 reconfiguration as `sys.stdout`.
+
+### Added
+- **`data_quality` JSON section (31st section)** — surfaces CSV schema warnings (missing expected DV/SDL columns), CSV rows skipped during parsing, Sigma/YARA rule load-error counts, and ATT&CK bundle load failures, so an analyst can tell when a verdict may be based on incomplete detection coverage instead of a silently degraded run. `CsvParser` now validates the header row against the columns each format actually needs and warns (both on stderr and in this section) when they're missing.
+- **HTML data-quality banner** — `report.html` shows a warning banner above the verdict hero when `data_quality` has any warnings/errors; renders nothing on a clean run.
+- **`--fail-threshold N`** — exit code 1 if the normalized verdict score (0-20) is `>= N`, for CI/automation gates.
+- **VirusTotal wait-time estimate** — prints "Checking N hash(es)/URL(s) against VirusTotal (~Xs)..." before the rate-limited lookups start, so the "Generating report..." step no longer sits silently for minutes with no explanation.
+
+### Improved
+- **Sigma evaluation performance** — `SigmaEvaluator` now builds a `event_type → rules` index once at load instead of checking each rule's category against every event during `evaluate_all`. Rules with an unmapped or intentionally empty category (e.g. `sysmon`/`wmi_event`/`builtin`, which have no direct S1 event equivalent) still evaluate against every event, exactly matching prior behavior — this is a behavior-preserving optimization, not a detection-coverage change (verified: every loaded rule is still reachable via the index or the unfiltered fallback).
+- **MITRE ATT&CK lookup performance** — `MitreAttackEnricher.get_technique_info` did a full linear scan of every technique in the ~48MB STIX bundle on every call. Now builds a `tid → technique` index once at load; lookups are O(1).
+- **IsolationForest on large CSVs** — `StatisticalAnalyzer` now caps `max_samples` at 50,000 for tree-building on very large event sets; `predict()`/`decision_function()` still score every event.
+- **Sigma/YARA/ATT&CK load errors are now counted** (`SigmaEvaluator.load_errors`, `YaraAnalyzer.rule_errors`, `MitreAttackEnricher.load_error`) instead of being silently swallowed, feeding into `data_quality`.
+
+### Tests
+- Added `tests/test_s1_analyzer.py` (pytest, 32 tests): pure-function coverage for URL cleaning/defanging/extraction, `EventParser`, `CsvParser` (line reconstruction, timestamp parsing, schema validation), correctness of the new Sigma event-type index against the full rule set, MITRE index lookups, and an end-to-end `analyze()` + `generate_html()` smoke test against a real sample CSV (`A_Analyser/RzSDKService.csv`) including an XSS regression guard. Run with `pytest tests/ -v` from the repo root.
+
 ## [3.3.2] - 2026-04-21
 
 ### Fixed
