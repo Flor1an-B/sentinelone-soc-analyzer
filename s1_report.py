@@ -598,6 +598,7 @@ function renderVerdictHero(){
   h+=' &nbsp;&#183;&nbsp; Process: <strong style="color:var(--text)" class="copyable" data-copy="'+esc(proc)+'">'+esc(proc)+'</strong>';
   h+=' &nbsp;&#183;&nbsp; User: <strong style="color:var(--text)">'+esc(user)+'</strong>';
   h+=' &nbsp;&#183;&nbsp; Period: <strong style="color:var(--text)">'+tsRange+'</strong></div>';
+  if(v.confidence_basis)h+='<div class="vh-confidence" style="opacity:.8;font-size:12px;margin-top:2px">'+esc(v.confidence_basis)+'</div>';
   h+='</div>';
   // Stats — TP Evidence / Mitigating / Observations
   h+='<div class="vh-stats">';
@@ -1538,10 +1539,37 @@ function renderDiagnosis(){
   h+='<span class="badge b-critical">16\u201320 Malicious</span>';
   h+='</div>';
 
+  // Evidentiary provenance \u2014 how independent is this verdict of
+  // SentinelOne's own detections? Never compares against S1's verdict
+  // (the tool never reads it); this is purely about OUR OWN evidence chain.
+  if(v.confidence_basis){
+    var cb=v.contribution_breakdown||{};
+    var s1Pts=cb.s1_indicators_points||0, indPts=cb.independent_points||0;
+    var totalPts=Math.max(1, s1Pts+indPts);
+    var s1Pct=Math.round(100*Math.max(0,s1Pts)/totalPts);
+    h+='<div class="alert-box info" style="margin-bottom:16px">';
+    h+='<span>&#128269;</span><div>';
+    h+='<strong>Evidentiary basis:</strong> '+esc(v.confidence_basis)+
+       '<div style="font-size:11px;margin-top:6px;opacity:.85">'+
+       'Score contribution \u2014 SentinelOne-derived: '+s1Pts+' pt(s) &nbsp;\u00b7&nbsp; '+
+       'Independent (our own analysis): '+indPts+' pt(s)</div>';
+    h+='<div style="height:6px;border-radius:4px;overflow:hidden;display:flex;margin-top:6px;background:var(--border)">'+
+       '<div style="width:'+s1Pct+'%;background:#94a3b8" title="SentinelOne-derived"></div>'+
+       '<div style="width:'+(100-s1Pct)+'%;background:#3b82f6" title="Independent"></div></div>';
+    h+='</div></div>';
+  }
+
   // Evidence
   if(tp.length>0){
+    var tpSrc=v.evidence_tp_sources||[];
     h+='<div class="chart-title">True Positive Evidence</div><ul class="ev-list">';
-    tp.forEach(function(e){h+='<li class="ev-item ev-tp"><span class="ev-icon">&#8853;</span><span>'+esc(e)+'</span></li>';});
+    tp.forEach(function(e,i){
+      var src=tpSrc[i];
+      var tag=src==='s1_indicators'
+        ?'<span class="badge" style="background:#94a3b833;color:#64748b;margin-left:6px;font-size:9px;padding:1px 6px">S1</span>'
+        :(src==='independent'?'<span class="badge" style="background:#3b82f633;color:#3b82f6;margin-left:6px;font-size:9px;padding:1px 6px">INDEPENDENT</span>':'');
+      h+='<li class="ev-item ev-tp"><span class="ev-icon">&#8853;</span><span>'+esc(e)+tag+'</span></li>';
+    });
     h+='</ul>';
   }
   if(fp.length>0){

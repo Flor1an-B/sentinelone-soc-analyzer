@@ -92,7 +92,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # VERSION & METADATA
 # ---------------------------------------------------------------------------
-__version__  = "3.4.1"
+__version__  = "3.5.0"
 __author__   = "Florian Bertaux"
 __tool__     = "S1 Analyzer"
 
@@ -3117,6 +3117,75 @@ class LsassAnalyzer:
 class CmdlineAnalyzer:
     """Analyse heuristique des lignes de commande pour détecter des patterns suspects."""
 
+    # LOLBins (Living Off The Land Binaries) — legitimate Windows binaries
+    # commonly abused for execution/download/AppLocker bypass. Invoking the
+    # binary alone is NOT suspicious (all of these are used constantly for
+    # legitimate purposes); only the specific argument patterns below —
+    # each one a documented real-world abuse technique (see LOLBAS project)
+    # — are scored. exe name -> (MITRE technique, [(pattern, severity, description)]).
+    LOLBINS_DB = {
+        "rundll32.exe": ("T1218.011", [
+            (r"javascript:", "CRITIQUE",
+             "rundll32 executing inline JavaScript — LOLBin abuse, direct code execution"),
+            (r"url\.dll,\s*(OpenURL|FileProtocolHandler|OpenURLA)", "ELEVE",
+             "rundll32 abusing url.dll to open a URL/file — LOLBin abuse"),
+            (r"(?:\\temp\\|\\appdata\\|\\downloads\\|\\programdata\\).*\.dll", "ELEVE",
+             "rundll32 loading a DLL from a non-standard user-writable path"),
+        ]),
+        "regsvr32.exe": ("T1218.010", [
+            (r"/i:https?://", "CRITIQUE",
+             "regsvr32 ‘Squiblydoo’ — registering a remote scriptlet, bypasses AppLocker/whitelisting"),
+            (r"scrobj\.dll", "ELEVE",
+             "regsvr32 loading scrobj.dll (scriptlet host) — common Squiblydoo indicator"),
+        ]),
+        "mshta.exe": ("T1218.005", [
+            (r"https?://", "CRITIQUE",
+             "mshta executing a remote HTA payload — LOLBin abuse, common initial-access technique"),
+            (r"javascript:|vbscript:", "ELEVE",
+             "mshta executing inline script — LOLBin abuse"),
+        ]),
+        "certutil.exe": ("T1140", [
+            (r"-urlcache.*-f|-verifyctl.*-f", "CRITIQUE",
+             "certutil abused to download a remote file — LOLBin abuse"),
+            (r"-decode\b", "ELEVE",
+             "certutil abused to decode a base64-encoded payload — LOLBin abuse"),
+        ]),
+        "bitsadmin.exe": ("T1197", [
+            (r"/transfer", "ELEVE",
+             "bitsadmin abused to download a file via BITS — LOLBin abuse, evades some network monitoring"),
+        ]),
+        "wmic.exe": ("T1047", [
+            (r"process\s+call\s+create", "ELEVE",
+             "wmic abused for process creation — LOLBin abuse, common lateral-movement technique"),
+            (r"/format:", "ELEVE",
+             "wmic /format XSL injection — LOLBin abuse, executes arbitrary embedded JScript/VBScript"),
+        ]),
+        "msbuild.exe": ("T1127.001", [
+            (r"\.(csproj|xml)\b", "ELEVE",
+             "MSBuild executing an inline-task project file — fileless code execution, LOLBin abuse"),
+        ]),
+        "installutil.exe": ("T1218.004", [
+            (r"/logfile=", "ELEVE",
+             "InstallUtil ‘Squiblytwo’-style execution bypass (redirected logfile) — LOLBin abuse"),
+        ]),
+        "regasm.exe": ("T1218.009", [
+            (r"/logfile=", "ELEVE",
+             "Regasm ‘Squiblytwo’-style execution bypass (redirected logfile) — LOLBin abuse"),
+        ]),
+        "regsvcs.exe": ("T1218.009", [
+            (r"/logfile=", "ELEVE",
+             "RegSvcs ‘Squiblytwo’-style execution bypass (redirected logfile) — LOLBin abuse"),
+        ]),
+        "forfiles.exe": ("T1202", [
+            (r"/c\s", "ELEVE",
+             "forfiles /c abused to proxy-execute an arbitrary command — LOLBin abuse, whitelisting bypass"),
+        ]),
+        "odbcconf.exe": ("T1218.008", [
+            (r"regsvr", "ELEVE",
+             "odbcconf abused to load an arbitrary DLL via REGSVR action — LOLBin abuse, similar to regsvr32"),
+        ]),
+    }
+
     # Patterns suspects dans les command lines (regex, severity, description, mitre)
     CMDLINE_PATTERNS = [
         (r"(?i)[A-Za-z0-9+/]{60,}={0,2}",
@@ -3153,6 +3222,7 @@ class CmdlineAnalyzer:
     def _analyze(self):
         seen_patterns: set = set()
         seen_entropy: set = set()
+        seen_lolbin: set = set()
 
         for ev in self.events:
             d = ev["details"]
@@ -3181,6 +3251,34 @@ class CmdlineAnalyzer:
                             "field":       field,
                             "timestamp":   ev["timestamp_raw"],
                         })
+
+                # LOLBins — contextual scoring of known-abusable Windows
+                # binaries. Only the specific argument patterns are scored
+                # (see LOLBINS_DB docstring); merely invoking one of these
+                # is normal, ubiquitous, legitimate Windows behavior.
+                exe_parts = cmdline.replace('"', '').split()
+                exe_full  = Path(exe_parts[0]).name.lower() if exe_parts else ""
+                lolbin = self.LOLBINS_DB.get(exe_full)
+                if lolbin:
+                    mitre_lol, lol_patterns = lolbin
+                    for pattern, severity, description in lol_patterns:
+                        key = (exe_full, pattern, cmdline[:80])
+                        if key in seen_lolbin:
+                            continue
+                        m = re.search(pattern, cmdline, re.IGNORECASE)
+                        if m:
+                            seen_lolbin.add(key)
+                            ctx_start = max(0, m.start() - 40)
+                            ctx_end   = min(len(cmdline), m.end() + 120)
+                            self.cmdline_findings.append({
+                                "severity":    severity,
+                                "description": f"[LOLBIN] {description}",
+                                "mitre":       mitre_lol,
+                                "context":     cmdline[ctx_start:ctx_end],
+                                "cmdline":     cmdline[:5000],
+                                "field":       field,
+                                "timestamp":   ev["timestamp_raw"],
+                            })
 
                 # Entropie du nom d'exécutable
                 parts = cmdline.replace('"', '').split()
@@ -4518,6 +4616,65 @@ class VerdictEngine:
         self.evidence_fp = []   # arguments en faveur d'un FP (contexte explicatif)
         self.observations = []  # observations neutres
 
+        # Evidentiary provenance tracking. 's1_indicators' = derived from
+        # SentinelOne's own Behavioral Indicators/attack-chain/temporal-
+        # sequence engine (BehaviorAnalyzer only ever reads S1's own
+        # "Behavioral Indicators" CSV events — see _check_indicators,
+        # _check_attack_chains, _check_temporal). 'independent' = derived
+        # from raw telemetry (process tree, network, files, registry,
+        # scripts, cmdlines) via our own Sigma/YARA/heuristic engines. This
+        # exists so the report can show HOW independent a given verdict
+        # actually is, without ever reading SentinelOne's own verdict —
+        # the tool must stay blind to S1's classification to avoid
+        # anchoring bias; this only tracks the provenance of OUR OWN
+        # evidence.
+        self.score_by_source = {"s1_indicators": 0, "independent": 0}
+        self._evidence_tp_sources = []  # parallel to evidence_tp
+        self._evidence_fp_sources = []  # parallel to evidence_fp
+        self.n_critical = 0             # critical-severity findings, any source
+        self.n_high = 0                 # high-severity findings, any source
+        self.n_critical_s1 = 0
+        self.n_critical_independent = 0
+        self.n_high_s1 = 0
+        self.n_high_independent = 0
+
+    def _add_score(self, points: int, source: str):
+        """Add points to the score and the source breakdown only (no
+        evidence_tp/fp entry — used for findings recorded as observations)."""
+        self.score += points
+        self.score_by_source[source] = self.score_by_source.get(source, 0) + points
+
+    def _tp(self, points: int, source: str, text: str, severity: str = None):
+        """Record a true-positive-leaning finding. severity ('critical' or
+        'high') feeds the confidence gating in evaluate() below, replacing
+        the previous approach of pattern-matching evidence text for two
+        hardcoded English strings — which silently missed every Sigma/YARA/
+        script/graph/cmdline/user-agent finding (their severities are
+        rendered in French: CRITIQUE/ELEVE) and meant a report with strong
+        independent-only corroboration could never reach a confident
+        verdict without an S1-derived [CRITICAL]/[HIGH]/[CHAIN] finding."""
+        self._add_score(points, source)
+        self.evidence_tp.append(text)
+        self._evidence_tp_sources.append(source)
+        if severity == "critical":
+            self.n_critical += 1
+            if source == "s1_indicators":
+                self.n_critical_s1 += 1
+            else:
+                self.n_critical_independent += 1
+        elif severity == "high":
+            self.n_high += 1
+            if source == "s1_indicators":
+                self.n_high_s1 += 1
+            else:
+                self.n_high_independent += 1
+
+    def _fp(self, points: int, source: str, text: str):
+        """Record a false-positive/mitigating finding (points typically <= 0)."""
+        self._add_score(points, source)
+        self.evidence_fp.append(text)
+        self._evidence_fp_sources.append(source)
+
     def evaluate(self) -> dict:
         self._check_execution_context()
         self._check_indicators()
@@ -4561,11 +4718,44 @@ class VerdictEngine:
         norm_score = round(min(20, norm_score))
 
         # ── Verdict thresholds (based on normalized 0-20 scale) ──
-        # Qualitative context: presence of CRITICAL indicators or attack chains
-        has_critical = any("[CRITICAL]" in e or "[CHAIN]" in e for e in self.evidence_tp)
-        has_multiple_high = sum(1 for e in self.evidence_tp
-                                if e.startswith("[CRITICAL]") or e.startswith("[HIGH]")
-                                or e.startswith("[CHAIN]")) >= 3
+        # Qualitative context: presence of critical-severity findings, now
+        # counted across ALL sources via explicit severity tracking in
+        # _tp() (see its docstring) instead of matching evidence text.
+        has_critical = self.n_critical >= 1
+        has_multiple_high = (self.n_critical + self.n_high) >= 3
+
+        # Confidence basis: is the verdict backed by independently-derived
+        # evidence, or only by SentinelOne's own detections? Never used to
+        # compare against S1's verdict (the tool never reads it) — this is
+        # purely about the evidentiary strength of OUR OWN conclusion, so
+        # the analyst can write a defensible "our tool says X because
+        # [independent evidence Y]" justification. Must account for BOTH
+        # ways the confidence gate above can fire: >=1 critical finding, OR
+        # >=3 critical-or-high findings (has_multiple_high) — a case can
+        # reach "High" confidence purely on 3+ HIGH-severity findings with
+        # zero CRITICAL ones, so counting only n_critical_* here would wrongly
+        # report "no strong finding" while the verdict says High confidence.
+        strong_independent = self.n_critical_independent + self.n_high_independent
+        strong_s1          = self.n_critical_s1 + self.n_high_s1
+        if strong_independent > 0 and strong_s1 > 0:
+            confidence_basis = (
+                f"corroborated by both SentinelOne's own detections "
+                f"({strong_s1} strong finding(s)) and independent raw-telemetry "
+                f"analysis ({strong_independent} strong finding(s))"
+            )
+        elif strong_independent > 0:
+            confidence_basis = (
+                f"independently corroborated by raw telemetry analysis "
+                f"({strong_independent} strong finding(s), no S1 behavioral indicator involved)"
+            )
+        elif strong_s1 > 0:
+            confidence_basis = (
+                f"based on SentinelOne's own behavioral detections "
+                f"({strong_s1} strong finding(s)); not independently corroborated "
+                f"by raw telemetry analysis"
+            )
+        else:
+            confidence_basis = "based on cumulative low-severity signals, no single strong finding"
 
         # Score thresholds:
         #   0-3  / 20 : FALSE POSITIVE / BENIGN
@@ -4598,23 +4788,34 @@ class VerdictEngine:
         return {
             "verdict":      verdict,
             "confidence":   confidence,
+            "confidence_basis": confidence_basis,
             "score":        norm_score,
             "raw_score":    raw,
             "evidence_tp":  self.evidence_tp,
             "evidence_fp":  self.evidence_fp,
             "observations": self.observations,
+            "evidence_tp_sources": self._evidence_tp_sources,
+            "evidence_fp_sources": self._evidence_fp_sources,
+            "contribution_breakdown": {
+                "s1_indicators_points":         self.score_by_source.get("s1_indicators", 0),
+                "independent_points":           self.score_by_source.get("independent", 0),
+                "critical_findings_s1":         self.n_critical_s1,
+                "critical_findings_independent": self.n_critical_independent,
+                "high_findings_s1":              self.n_high_s1,
+                "high_findings_independent":     self.n_high_independent,
+            },
         }
 
     def _check_execution_context(self):
-        """Analyse le vecteur d'exécution (qui a lancé le processus)."""
+        """Analyse le vecteur d'exécution (qui a lancé le processus) — indépendant
+        (analyse de l'arbre de processus brut, pas des indicateurs S1)."""
         sev, desc = self.proc.get_attack_vector()
         if sev:
             pts = 5 if sev == "CRITIQUE" else 3
-            self.score += pts
-            self.evidence_tp.append(
-                f"[{sev}] Attack vector identified: {desc} "
-                f"(process launched from a high-risk program)"
-            )
+            self._tp(pts, "independent",
+                     f"[{sev}] Attack vector identified: {desc} "
+                     f"(process launched from a high-risk program)",
+                     severity="critical" if sev == "CRITIQUE" else "high")
         else:
             root = self.proc.get_root()
             if root:
@@ -4631,14 +4832,15 @@ class VerdictEngine:
         for level, cmd in chain:
             for exe, (sev2, desc2) in ATTACK_VECTOR_PARENTS.items():
                 if exe in cmd.lower():
-                    self.score += 2
-                    self.evidence_tp.append(
-                        f"[HIGH] Suspicious ancestor in execution chain ({level}): "
-                        f"{exe} - {desc2}"
-                    )
+                    self._tp(2, "independent",
+                             f"[HIGH] Suspicious ancestor in execution chain ({level}): "
+                             f"{exe} - {desc2}",
+                             severity="high")
 
     def _check_indicators(self):
-        """Score basé sur les indicateurs comportementaux."""
+        """Score basé sur les indicateurs comportementaux — dérivé de S1
+        (BehaviorAnalyzer ne lit que les événements "Behavioral Indicators"
+        générés par le moteur de détection de SentinelOne lui-même)."""
         is_electron = self.proc.is_electron()
 
         for ind in self.behav.get_unique():
@@ -4650,27 +4852,22 @@ class VerdictEngine:
 
             # FP: log and skip TP scoring; security tool FPs actively reduce score
             if analysis["is_fp"]:
-                self.evidence_fp.append(
-                    f"Indicator '{name}': {analysis['assessment']}"
-                )
-                if "Security tool" in analysis.get("assessment", ""):
-                    self.score -= 1  # Known security vendor: counteract false positives
+                pts = -1 if "Security tool" in analysis.get("assessment", "") else 0
+                self._fp(pts, "s1_indicators", f"Indicator '{name}': {analysis['assessment']}")
                 continue
 
             sev = db.get("severity", "ELEVE")
 
             if sev == "CRITIQUE":
-                self.score += tp_score
-                self.evidence_tp.append(
-                    f"[CRITICAL] {name}: {db.get('description', ind.get('description',''))}"
-                )
+                self._tp(tp_score, "s1_indicators",
+                         f"[CRITICAL] {name}: {db.get('description', ind.get('description',''))}",
+                         severity="critical")
             elif sev == "ELEVE":
-                self.score += max(1, tp_score - 1)
-                self.evidence_tp.append(
-                    f"[HIGH] {name}: {db.get('description', ind.get('description',''))}"
-                )
+                self._tp(max(1, tp_score - 1), "s1_indicators",
+                         f"[HIGH] {name}: {db.get('description', ind.get('description',''))}",
+                         severity="high")
             elif sev == "MOYEN":
-                self.score += max(1, tp_score - 2)
+                self._add_score(max(1, tp_score - 2), "s1_indicators")
                 self.observations.append(f"[MEDIUM] {name} detected")
             else:
                 self.observations.append(f"[{sev}] {name} detected (low forensic value alone)")
@@ -4678,64 +4875,62 @@ class VerdictEngine:
             # Bayesian confidence bonus
             bonus = self.ctx.get_confidence_bonus(ind)
             if bonus > 0:
-                self.score += bonus
+                self._add_score(bonus, "s1_indicators")
                 self.observations.append(
                     f"[CONFIDENCE +{bonus}] '{name}': elevated confidence "
                     f"(occurrences/co-indicators/critical context)"
                 )
 
     def _check_attack_chains(self):
-        """Score based on correlated attack chains."""
+        """Score based on correlated attack chains — dérivé de S1 (bâti
+        sur les mêmes indicateurs comportementaux que _check_indicators,
+        via CorrelationEngine.get_matched_chains)."""
         for chain in self.corr.get_matched_chains(ctx=self.ctx):
-            self.score += chain["score"]
-            self.evidence_tp.append(
-                f"[CHAIN] {chain['name']}: {chain['description']}"
-            )
+            self._tp(chain["score"], "s1_indicators",
+                     f"[CHAIN] {chain['name']}: {chain['description']}",
+                     severity="critical")
 
     def _check_script_content(self):
-        """Score based on script content analysis."""
+        """Score based on script content analysis — indépendant (contenu
+        brut des scripts/commandes)."""
         for finding in self.scripts.analyze():
             sev = finding["severity"]
             pts = {"CRITIQUE": 4, "ELEVE": 2, "MOYEN": 1}.get(sev, 1)
-            self.score += pts
-            self.evidence_tp.append(
-                f"[SCRIPT {sev}] {finding['description']} "
-                f"(extract: ...{finding['context'][:80]}...)"
-            )
+            sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
+            self._tp(pts, "independent",
+                     f"[SCRIPT {sev}] {finding['description']} "
+                     f"(extract: ...{finding['context'][:80]}...)",
+                     severity=sev_flag)
 
     def _check_suspicious_modules(self):
-        """Score based on suspicious loaded DLLs."""
+        """Score based on suspicious loaded DLLs — indépendant."""
         for mod in self.modules.get_suspicious():
             sev = mod["severity"]
             pts = {"ELEVE": 2, "MOYEN": 1}.get(sev, 0)
             if pts > 0:
-                self.score += pts
-                self.evidence_tp.append(
-                    f"[MODULE {sev}] {mod['name']}: {mod['analysis']}"
-                )
+                self._tp(pts, "independent",
+                         f"[MODULE {sev}] {mod['name']}: {mod['analysis']}",
+                         severity="high" if sev == "ELEVE" else None)
 
     def _check_network(self):
-        """Analyse réseau basée sur le comportement, pas sur la réputation seule."""
+        """Analyse réseau basée sur le comportement, pas sur la réputation
+        seule — indépendant (télémétrie réseau brute)."""
         ext = self.net.get_unique_external()
         suspicious_ips = self.net.get_suspicious_external()
 
         # IPs non identifiées
         for d in suspicious_ips:
-            self.score += 1
-            self.evidence_tp.append(
-                f"[NETWORK] Connection to unidentified IP: "
-                f"{d['dst_ip']}:{d['dst_port']} - verification required"
-            )
+            self._tp(1, "independent",
+                     f"[NETWORK] Connection to unidentified IP: "
+                     f"{d['dst_ip']}:{d['dst_port']} - verification required")
 
         # Non-standard ports (outside 80/443/8080/8443/53)
         std_ports = {"80", "443", "8080", "8443", "53", "22", "21"}
         non_std = [d for d in ext if d["dst_port"] not in std_ports]
         if non_std:
             ports_str = ", ".join(set(f"{d['dst_ip']}:{d['dst_port']}" for d in non_std[:3]))
-            self.score += 1
-            self.evidence_tp.append(
-                f"[NETWORK] Connections on non-standard ports: {ports_str}"
-            )
+            self._tp(1, "independent",
+                     f"[NETWORK] Connections on non-standard ports: {ports_str}")
 
         # All connections to identified providers
         if ext and not suspicious_ips:
@@ -4751,91 +4946,94 @@ class VerdictEngine:
                        if d["dst_port"].isdigit() and int(d["dst_port"]) > 40000
                        and d["dst_port"] not in {"65535"}]
         if c2_internal:
-            self.score += 1
             pts = ", ".join(f"{d['dst_ip']}:{d['dst_port']}" for d in c2_internal[:3])
-            self.evidence_tp.append(
-                f"[NETWORK] Internal connections on high ports (potential C2): {pts}"
-            )
+            self._tp(1, "independent",
+                     f"[NETWORK] Internal connections on high ports (potential C2): {pts}")
 
     def _check_files(self):
+        """Indépendant (opérations fichiers brutes)."""
         suspects = self.files.get_suspicious_files()
         if suspects:
-            self.score += 2
+            self._add_score(2, "independent")
             for s in suspects[:3]:
                 self.evidence_tp.append(f"[FILE] Suspicious file: {s['path']}")
+                self._evidence_tp_sources.append("independent")
 
         mass, creations, deletions = self.files.detect_mass_operation()
         if mass:
             if self.files.is_build_activity():
-                self.evidence_fp.append(
-                    f"Bulk file operations ({creations} creations, {deletions} deletions) "
-                    f"consistent with a build/packaging context"
-                )
+                self._fp(0, "independent",
+                         f"Bulk file operations ({creations} creations, {deletions} deletions) "
+                         f"consistent with a build/packaging context")
             else:
-                self.score += 2
-                self.evidence_tp.append(
-                    f"[FILE] Mass operations: {creations} creations + "
-                    f"{deletions} deletions (possible ransomware pattern)"
-                )
+                self._tp(2, "independent",
+                         f"[FILE] Mass operations: {creations} creations + "
+                         f"{deletions} deletions (possible ransomware pattern)")
 
     def _check_registry(self):
+        """Indépendant (clés de registre brutes)."""
         hits = self.reg.get_persistence_hits()
         for h in hits:
-            self.score += 3
-            self.evidence_tp.append(
-                f"[PERSISTENCE] {h['label']}: {h['key']}"
-                + (f" = {h['value'][:60]}" if h["value"] else "")
-            )
+            self._tp(3, "independent",
+                     f"[PERSISTENCE] {h['label']}: {h['key']}"
+                     + (f" = {h['value'][:60]}" if h["value"] else ""))
         if not hits:
             self.observations.append("No registry persistence key identified")
 
     def _check_tasks(self):
+        """Indépendant (tâches planifiées brutes)."""
         suspicious_tasks = self.tasks.has_suspicious_tasks()
         for t in suspicious_tasks:
-            self.score += 2
-            self.evidence_tp.append(
-                f"[TASK] Suspicious scheduled task: {t['task_name']} "
-                f"({t['event_type']})"
-            )
+            self._tp(2, "independent",
+                     f"[TASK] Suspicious scheduled task: {t['task_name']} "
+                     f"({t['event_type']})")
 
     def _check_sigma(self, sigma: "SigmaEvaluator"):
-        """Score based on Sigma community rule matches."""
+        """Score based on Sigma community rule matches — indépendant (2600+
+        règles de la communauté SigmaHQ évaluées sur la télémétrie brute)."""
         level_pts = {"CRITICAL": 3, "HIGH": 2, "MEDIUM": 1, "LOW": 0, "INFORMATIONAL": 0}
         sigma_total = 0
-        sigma_cap   = 6  # plafond pour éviter les FP massifs en volume
+        # evaluate_all() already dedupes by rule title across ALL events, so
+        # one noisy rule matching many events can never inflate this on its
+        # own — the cap here only limits how many *distinct* rules count.
+        # Raised from 6: several independent CRITICAL-level community rules
+        # (curated for high precision) matching the same storyline is strong
+        # corroboration, not FP volume, and was previously undervalued vs.
+        # YARA's uncapped scoring for an equivalent signal.
+        sigma_cap   = 15
         for hit in sigma.evaluate_all(self.behav.events):
             pts = level_pts.get(hit["level"], 1)
             if pts > 0 and sigma_total < sigma_cap:
-                self.score += pts
                 sigma_total += pts
                 mitre_str = f" [{', '.join(hit['mitre'][:3])}]" if hit["mitre"] else ""
-                self.evidence_tp.append(
-                    f"[SIGMA {hit['level']}] {hit['title']}{mitre_str}: "
-                    f"{hit['description'][:120]}"
-                )
+                sev_flag = "critical" if hit["level"] == "CRITICAL" else \
+                           ("high" if hit["level"] == "HIGH" else None)
+                self._tp(pts, "independent",
+                         f"[SIGMA {hit['level']}] {hit['title']}{mitre_str}: "
+                         f"{hit['description'][:120]}",
+                         severity=sev_flag)
 
     def _check_process_graph(self, pg: "ProcessGraphAnalyzer"):
-        """Score based on process graph anomalies."""
+        """Score based on process graph anomalies — indépendant (topologie
+        du graphe de processus construite depuis la télémétrie brute)."""
         sev_pts = {"CRITIQUE": 4, "ELEVE": 2, "MOYEN": 1}
         for a in pg.get_anomalies():
-            pts = sev_pts.get(a["severity"], 1)
-            self.score += pts
-            self.evidence_tp.append(
-                f"[GRAPH {a['severity']}] {a['description']}"
-            )
+            sev = a["severity"]
+            pts = sev_pts.get(sev, 1)
+            sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
+            self._tp(pts, "independent", f"[GRAPH {sev}] {a['description']}", severity=sev_flag)
 
     def _check_stats(self, stats: "StatisticalAnalyzer"):
-        """Score based on statistical anomalies."""
+        """Score based on statistical anomalies — indépendant (IsolationForest
+        sur la télémétrie brute)."""
         if stats.get_outliers():
             n = len(stats.get_outliers())
-            self.score += min(n, 3)
-            self.evidence_tp.append(
-                f"[STATS] {n} statistically anomalous event(s) detected "
-                f"by IsolationForest (unusual cmd length/entropy/type distribution)"
-            )
+            self._tp(min(n, 3), "independent",
+                     f"[STATS] {n} statistically anomalous event(s) detected "
+                     f"by IsolationForest (unusual cmd length/entropy/type distribution)")
         ah = stats.get_after_hours()
         if ah:
-            self.score += 1
+            self._add_score(1, "independent")
             self.observations.append(
                 f"[STATS] {len(ah)} event(s) occurred outside business hours "
                 f"(before 07:00 or after 20:00)"
@@ -4848,18 +5046,20 @@ class VerdictEngine:
             )
 
     def _check_yara(self, yara_an: "YaraAnalyzer"):
-        """Score based on YARA rule matches."""
+        """Score based on YARA rule matches \u2014 ind\u00e9pendant (5000+ r\u00e8gles YARA
+        Forge scann\u00e9es sur les cmdlines/scripts bruts)."""
         for hit in yara_an.get_hits():
             sev = hit["severity"]
             pts = {"CRITIQUE": 4, "ELEVE": 2}.get(sev, 1)
-            self.score += pts
-            self.evidence_tp.append(
-                f"[YARA {sev}] Rule '{hit['rule']}' matched in {hit['context']}: "
-                f"{hit['preview'][:60]}\u2026"
-            )
+            sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
+            self._tp(pts, "independent",
+                     f"[YARA {sev}] Rule '{hit['rule']}' matched in {hit['context']}: "
+                     f"{hit['preview'][:60]}\u2026",
+                     severity=sev_flag)
 
     def _check_process_signature(self):
-        """Score la signature : bonus de confiance pour éditeurs connus, malus si non signé."""
+        """Score la signature : bonus de confiance pour éditeurs connus,
+        malus si non signé — indépendant (métadonnées de signature brutes)."""
         root = self.proc.get_root()
         if not root:
             return
@@ -4867,11 +5067,9 @@ class VerdictEngine:
         pub    = root.get("publisher", "") or ""
 
         if signed == "unsigned":
-            self.score += 1
-            self.evidence_tp.append(
-                "Process is not digitally signed: cannot verify executable integrity "
-                "via the PKI trust chain"
-            )
+            self._tp(1, "independent",
+                     "Process is not digitally signed: cannot verify executable integrity "
+                     "via the PKI trust chain")
         elif signed == "signed":
             pub_lower = pub.lower()
             # Known trusted publishers — mitigating factor
@@ -4880,11 +5078,9 @@ class VerdictEngine:
                 "oracle", "vmware", "citrix", "cisco",
             ))
             if trusted:
-                self.score -= 2
-                self.evidence_fp.append(
-                    f"Process signed by trusted publisher: {pub} "
-                    f"(reduces likelihood of malicious binary, does not exclude exploitation)"
-                )
+                self._fp(-2, "independent",
+                         f"Process signed by trusted publisher: {pub} "
+                         f"(reduces likelihood of malicious binary, does not exclude exploitation)")
             else:
                 self.observations.append(
                     f"Process signed by: {pub or 'N/A'} "
@@ -4902,67 +5098,71 @@ class VerdictEngine:
                 f"Some indicators are inherent false positives of this architecture "
                 f"(multi-process sandbox, GPU process, etc.)"
             )
+            self._evidence_fp_sources.append("independent")
 
     def _check_lsass(self, lsass: "LsassAnalyzer"):
-        """Score basé sur les accès à LSASS détectés."""
+        """Score basé sur les accès à LSASS détectés — indépendant (accès
+        mémoire brut). Un accès direct à LSASS est un vol d'identifiants
+        sans ambiguïté ; compté comme critique."""
         for hit in lsass.get_hits():
             et = hit["event_type"]
             if et == "BehavioralIndicator":
                 # Already scored via _check_indicators, skip
                 continue
-            self.score += 4
-            self.evidence_tp.append(
-                f"[LSASS] Direct LSASS access via {et}: "
-                f"credential dumping attempt — {hit['access'] or 'unknown access rights'}"
-            )
+            self._tp(4, "independent",
+                     f"[LSASS] Direct LSASS access via {et}: "
+                     f"credential dumping attempt — {hit['access'] or 'unknown access rights'}",
+                     severity="critical")
 
     def _check_cmdline(self, cmdline: "CmdlineAnalyzer"):
-        """Score basé sur l'analyse heuristique des lignes de commande."""
+        """Score basé sur l'analyse heuristique des lignes de commande —
+        indépendant (cmdlines brutes, tous types d'événements confondus,
+        pas seulement les indicateurs S1)."""
         for f in cmdline.get_findings():
             sev = f["severity"]
             pts = {"CRITIQUE": 4, "ELEVE": 2, "MOYEN": 1}.get(sev, 1)
-            self.score += pts
-            self.evidence_tp.append(
-                f"[CMDLINE {sev}] {f['description']} "
-                f"(extract: ...{f['context'][:70]}...)"
-            )
+            sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
+            self._tp(pts, "independent",
+                     f"[CMDLINE {sev}] {f['description']} "
+                     f"(extract: ...{f['context'][:70]}...)",
+                     severity=sev_flag)
         for ep in cmdline.get_high_entropy_procs()[:3]:
-            self.score += 1
-            self.evidence_tp.append(
-                f"[ENTROPY] High-entropy executable name '{ep['name']}' "
-                f"(H={ep['entropy']} bits): possible randomly-generated malware name"
-            )
+            self._tp(1, "independent",
+                     f"[ENTROPY] High-entropy executable name '{ep['name']}' "
+                     f"(H={ep['entropy']} bits): possible randomly-generated malware name")
 
     def _check_temporal(self, temporal: "TemporalCorrelationAnalyzer"):
-        """Score basé sur les séquences d'attaque temporelles."""
+        """Score basé sur les séquences d'attaque temporelles — dérivé de S1
+        (ordonne dans le temps les mêmes indicateurs comportementaux que
+        _check_indicators, via TemporalCorrelationAnalyzer(behav))."""
         for seq in temporal.get_sequences():
-            self.score += 2
-            self.evidence_tp.append(
-                f"[TEMPORAL] {seq['description']} "
-                f"(delta: {seq['delta_sec']}s / window: {seq['window_sec']}s)"
-            )
+            self._tp(2, "s1_indicators",
+                     f"[TEMPORAL] {seq['description']} "
+                     f"(delta: {seq['delta_sec']}s / window: {seq['window_sec']}s)")
 
     def _check_user_agents(self, net: "NetworkAnalyzer"):
-        """Score basé sur les User-Agents HTTP suspects."""
+        """Score basé sur les User-Agents HTTP suspects — indépendant
+        (télémétrie réseau brute)."""
         for ua in net.get_suspicious_user_agents():
             sev = ua["severity"]
             pts = {"CRITIQUE": 4, "ELEVE": 2, "MOYEN": 1}.get(sev, 0)
             if pts:
-                self.score += pts
-                self.evidence_tp.append(
-                    f"[UA {sev}] {ua['description']} "
-                    f"(UA: {ua['user_agent'][:60]})"
-                )
+                sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
+                self._tp(pts, "independent",
+                         f"[UA {sev}] {ua['description']} "
+                         f"(UA: {ua['user_agent'][:60]})",
+                         severity=sev_flag)
 
     def _check_beacon(self, net: "NetworkAnalyzer"):
-        """Score basé sur la détection de beacon C2."""
+        """Score basé sur la détection de beacon C2 — indépendant (timing
+        des connexions réseau brutes). Un pattern de beacon régulier est un
+        signal C2 fort sans ambiguïté ; compté comme critique."""
         for b in net.detect_c2_beacon():
-            self.score += 3
-            self.evidence_tp.append(
-                f"[BEACON] Possible C2 beacon to {b['dst_ip']}:{b['dst_port']} "
-                f"({b['owner']}) — {b['count']} connections, "
-                f"interval={b['mean_interval_s']}s ±{b['std_dev_s']}s (CV={b['cv']})"
-            )
+            self._tp(3, "independent",
+                     f"[BEACON] Possible C2 beacon to {b['dst_ip']}:{b['dst_port']} "
+                     f"({b['owner']}) — {b['count']} connections, "
+                     f"interval={b['mean_interval_s']}s ±{b['std_dev_s']}s (CV={b['cv']})",
+                     severity="critical")
 
 
 # ===========================================================================
