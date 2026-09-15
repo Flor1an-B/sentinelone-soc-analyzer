@@ -237,6 +237,59 @@ class TestMitreAttackEnricher:
 
 
 # ─────────────────────────────────────────────────────────────────────────
+# YaraAnalyzer._load_monolithic — a public rule referencing a `private rule`
+# helper defined elsewhere in the same file must still compile when the
+# individual-compile fallback kicks in (regression: previously only the
+# rule's own chunk was compiled, dropping any private dependency and
+# failing with "undefined identifier" even though the rule itself was fine).
+# ─────────────────────────────────────────────────────────────────────────
+
+class TestYaraMonolithicPrivateRuleDependency:
+    def _make_analyzer(self, src, tmp_path):
+        import pytest
+        if not s1.HAS_YARA:
+            pytest.skip("yara-python not installed")
+        yar = tmp_path / "test.yar"
+        yar.write_text(src, encoding="utf-8")
+        ya = s1.YaraAnalyzer.__new__(s1.YaraAnalyzer)
+        ya._rule_sets = {}
+        ya._hits = []
+        ya._file_count = 0
+        ya.rule_errors = 0
+        ya.rule_error_samples = []
+        return ya, yar
+
+    def test_public_rule_gets_its_private_dependency(self, tmp_path):
+        # bad_rule forces the whole-batch compile to fail (undefined "pe"
+        # module in this bare compile context), triggering the per-rule
+        # fallback that used to drop cross-rule private dependencies.
+        src = (
+            "rule bad_rule { condition: pe.number_of_signatures > 0 }\n\n"
+            "private rule Chunk_PRIVATE { condition: true }\n\n"
+            "rule Depends_On_Private { condition: Chunk_PRIVATE and true }\n"
+        )
+        ya, yar = self._make_analyzer(src, tmp_path)
+        ya._load_monolithic(yar)
+        assert "Chunk_PRIVATE" in ya._rule_sets
+        assert "Depends_On_Private" in ya._rule_sets
+        assert ya.rule_errors == 1  # only bad_rule should fail
+        assert any("bad_rule" in s for s in ya.rule_error_samples)
+
+    def test_unrelated_broken_private_rule_does_not_poison_others(self, tmp_path):
+        # A private rule that is itself broken (and irrelevant to
+        # Depends_On_Unrelated) must not be pulled in and cause a spurious
+        # failure — only textually-referenced private rules are included.
+        src = (
+            "rule bad_rule { condition: pe.number_of_signatures > 0 }\n\n"
+            "private rule Broken_PRIVATE { condition: pe.number_of_signatures > 0 }\n\n"
+            "rule Depends_On_Unrelated { condition: true }\n"
+        )
+        ya, yar = self._make_analyzer(src, tmp_path)
+        ya._load_monolithic(yar)
+        assert "Depends_On_Unrelated" in ya._rule_sets
+
+
+# ─────────────────────────────────────────────────────────────────────────
 # End-to-end smoke test — full analyze() pipeline on a real sample CSV
 # ─────────────────────────────────────────────────────────────────────────
 

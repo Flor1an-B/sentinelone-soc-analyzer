@@ -4021,6 +4021,17 @@ class YaraAnalyzer:
         for i, start in enumerate(rule_starts):
             end = rule_starts[i + 1] if i + 1 < len(rule_starts) else len(src)
             chunks.append(src[start:end].rstrip())
+        # "private rule" building blocks referenced by other rules' conditions
+        # (e.g. `rule X { condition: X_Chunk_PRIVATE and ... }`) must be
+        # available when a public rule is compiled on its own in the
+        # individual fallback below, or it fails with "undefined identifier"
+        # even though the rule itself is fine.
+        private_by_name = {}
+        for c in chunks:
+            m = re.match(r'^private\s+rule\s+(\w+)', c)
+            if m:
+                private_by_name[m.group(1)] = c
+
         # Batch-compile in groups for speed; fall back to individual on error
         BATCH = 200
         loaded = 0
@@ -4037,8 +4048,19 @@ class YaraAnalyzer:
                 for j, rule_src in enumerate(batch):
                     name_m = re.match(r'(?:private\s+)?rule\s+(\w+)', rule_src)
                     rule_name = name_m.group(1) if name_m else f"{filepath.stem}_{b+j}"
+                    is_private = rule_src.lstrip().startswith("private ")
+                    deps = ""
+                    if not is_private:
+                        # Only pull in private rules actually referenced by
+                        # name, not every private rule in the file — some of
+                        # those may themselves be uncompilable for unrelated
+                        # reasons and would otherwise poison this rule too.
+                        needed = [c for name, c in private_by_name.items()
+                                  if name != rule_name and
+                                  re.search(r'\b' + re.escape(name) + r'\b', rule_src)]
+                        deps = "\n".join(needed) + "\n" if needed else ""
                     try:
-                        compiled = _yara.compile(source=import_block + rule_src)
+                        compiled = _yara.compile(source=import_block + deps + rule_src)
                         self._rule_sets[rule_name] = compiled
                         loaded += 1
                     except Exception as e:
