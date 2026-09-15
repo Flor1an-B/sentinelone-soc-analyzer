@@ -1,5 +1,14 @@
 # Changelog
 
+## [3.4.1] - 2026-09-15
+
+### Fixed
+- **`YaraAnalyzer` individual-rule fallback dropped `private rule` dependencies** — root-caused from a real production report showing "31 YARA rule(s) failed to compile": several failures were `undefined identifier "<X>_PRIVATE"` for public rules referencing a `private rule` helper defined elsewhere in the same monolithic file (e.g. `TRELLIX_ARC_Ransom_Xinof` needs `TRELLIX_ARC_Ransom_Xinof_Chunk_PRIVATE`, `AVASTTI_Manjusaka_Payload_*` need `AVASTTI_*_PRIVATE`). When a batch compile fails and `_load_monolithic` falls back to compiling each rule chunk on its own, the private helper's chunk wasn't included, so any public rule depending on one failed even though the rule itself was fine. Fixed by indexing every `private rule` chunk by name and, when compiling a public rule individually, textually scanning its source for references to those names and prepending only the ones actually used (deliberately not *every* private rule — an unrelated private rule that's itself uncompilable would otherwise poison rules that don't even need it). Verified against a real report: 31 → 28 failures, with the 3 resolved being exactly the `_PRIVATE` ones.
+
+### Added
+- **`data_quality.yara_rule_error_samples`** — `yara_rule_errors` previously only exposed a count, giving no way to diagnose which rules failed or why. `YaraAnalyzer` now records up to 10 `"rule_name: exception"` samples during the monolithic fallback's per-rule compile, surfaced in the JSON and as a sub-list under the YARA warning in the HTML data-quality banner. This is what made the private-rule bug above diagnosable in the first place, and also surfaced a separate, non-fixable issue: the remaining ~28 failures are all `invalid field name "number_of_signatures"` — a known Windows-specific `yara-python` limitation ([VirusTotal/yara-python#246](https://github.com/VirusTotal/yara-python/issues/246)) where the PE module's Authenticode signature fields aren't available even on the latest PyPI release (4.5.4), unrelated to this project's code.
+- **`s1_update.py --deps` (v2.1.0)** — upgrades the optional Python packages `s1_analyzer.py` uses (`pyyaml`, `networkx`, `pyod`, `yara-python`, `iocextract`, `mitreattack-python`, `certifi`) to their latest PyPI version via `pip`, so a single `s1_update.py` run keeps application files, detection rules, *and* the Python environment reproducibly up to date. Runs as part of the default no-argument full update alongside `--app`/`--rules`; supports `--check` (dry run via `pip install --upgrade --dry-run`) and `--force` (also attempts install of packages not currently present). A package that isn't installed is left alone otherwise, not treated as an error.
+
 ## [3.4.0] - 2026-09-03
 
 ### Security

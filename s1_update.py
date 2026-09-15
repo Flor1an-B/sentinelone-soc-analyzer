@@ -2,24 +2,30 @@
 """
 S1 Analyzer - Sync / Update Tool
 
-Unified updater: synchronizes application files AND detection rules.
+Unified updater: synchronizes application files, detection rules, AND the
+optional Python packages s1_analyzer.py uses.
 
   - Application files are compared (SHA1) against the GitHub repository
     and only changed files are downloaded.
   - Detection rules (MITRE ATT&CK, Sigma, YARA) are downloaded from
     their respective upstream sources.
+  - Dependencies (pyyaml, networkx, pyod, yara-python, iocextract,
+    mitreattack-python, certifi) are upgraded via pip to their latest
+    version, so every run stays reproducibly up to date end to end.
 
 Usage:
-    python s1_update.py              # Update everything (app + rules)
+    python s1_update.py              # Update everything (app + rules + deps)
     python s1_update.py --app        # Update application files only
     python s1_update.py --rules      # Update detection rules only
+    python s1_update.py --deps       # Upgrade Python packages only
     python s1_update.py --check      # Dry run (show what would change)
-    python s1_update.py --force      # Force re-download everything
+    python s1_update.py --force      # Force re-download/reinstall everything
 
-No dependencies required (uses Python stdlib only).
+s1_update.py itself needs no dependencies (Python stdlib only); --deps
+shells out to `python -m pip` to manage s1_analyzer.py's optional packages.
 """
 
-__version__ = "2.0.0"
+__version__ = "2.1.0"
 __author__  = "Florian Bertaux"
 __tool__    = "S1 Update"
 
@@ -29,6 +35,7 @@ import json
 import os
 import shutil
 import ssl
+import subprocess
 import sys
 import threading
 import time
@@ -686,6 +693,118 @@ def update_rules(check: bool = False, force: bool = False) -> bool:
 
 
 # ===========================================================================
+# DEPENDENCIES UPDATE (optional pip packages s1_analyzer.py uses)
+# ===========================================================================
+
+# Kept in sync with requirements.txt
+DEPENDENCIES = [
+    "pyyaml", "networkx", "pyod", "yara-python",
+    "iocextract", "mitreattack-python", "certifi",
+]
+
+
+def _pip(args: list) -> tuple:
+    """Run `python -m pip <args>` with the running interpreter's pip.
+    Returns (success, combined stdout+stderr)."""
+    try:
+        result = subprocess.run(
+            [sys.executable, "-m", "pip"] + args,
+            capture_output=True, text=True, timeout=180,
+        )
+        return result.returncode == 0, (result.stdout + result.stderr)
+    except Exception as e:
+        return False, str(e)
+
+
+def _installed_version(pkg: str) -> str:
+    """Installed version of a pip package, or '' if not installed."""
+    try:
+        from importlib.metadata import version, PackageNotFoundError
+        try:
+            return version(pkg)
+        except PackageNotFoundError:
+            return ""
+    except Exception:
+        return ""
+
+
+def update_deps(check: bool = False, force: bool = False) -> bool:
+    """
+    Upgrade the optional Python packages s1_analyzer.py uses (pyyaml,
+    networkx, pyod, yara-python, iocextract, mitreattack-python, certifi)
+    to their latest version via pip. A package that isn't installed is
+    left alone (not an error) unless --force is also passed.
+    Returns True if every attempted upgrade succeeded.
+    """
+    print()
+    print(_separator("Dependencies Update"))
+    print()
+
+    print(f"  {C.cyan('[*]')} Checking installed packages...")
+    before = {pkg: _installed_version(pkg) for pkg in DEPENDENCIES}
+    for pkg in DEPENDENCIES:
+        v = before[pkg]
+        print(f"      {pkg:<22}: {C.bold(v) if v else C.dim('not installed')}")
+    print()
+
+    targets = DEPENDENCIES if force else [p for p in DEPENDENCIES if before[p]]
+    if not targets:
+        print(f"  {C.dim('No optional dependencies installed — nothing to upgrade.')}")
+        print(f"  {C.dim('Run `pip install -r requirements.txt` to install them.')}")
+        return True
+
+    if check:
+        print(f"  {C.cyan('[*]')} Dry run — checking PyPI for newer versions...")
+        print()
+        any_update = False
+        for pkg in targets:
+            ok, out = _pip(["install", "--upgrade", "--dry-run", pkg])
+            if not ok:
+                print(f"      {pkg:<22}: {C.yellow('could not check (pip error)')}")
+                continue
+            if "Would install" in out:
+                target_line = [l for l in out.splitlines() if "Would install" in l]
+                print(f"      {pkg:<22}: {C.yellow('update available')} "
+                      f"{C.dim(target_line[-1].strip() if target_line else '')}")
+                any_update = True
+            else:
+                print(f"      {pkg:<22}: {C.green('up to date')}")
+        print()
+        print(f"  {C.dim('Run without --check to upgrade.' if any_update else 'All installed dependencies are up to date.')}")
+        return True
+
+    print(f"  {C.cyan('[*]')} Upgrading {len(targets)} package(s)...")
+    print()
+    t0 = time.time()
+    ok_count = 0
+    fail_count = 0
+    for pkg in targets:
+        sp = Spinner(f"{pkg}...").start()
+        ok, out = _pip(["install", "--upgrade", pkg])
+        after_v = _installed_version(pkg)
+        if ok:
+            ok_count += 1
+            if after_v and after_v != before[pkg]:
+                sp.stop(f"{pkg}: {C.dim(before[pkg] or 'not installed')} -> {C.green(after_v)}")
+            else:
+                sp.stop(f"{pkg}: {C.dim(f'already up to date ({after_v})' if after_v else 'unchanged')}")
+        else:
+            fail_count += 1
+            sp.stop(f"{pkg}: {C.red('upgrade failed')}", ok=False)
+
+    elapsed = time.time() - t0
+    print()
+    if fail_count == 0:
+        print(f"  {C.green('[OK]')} {ok_count} package(s) checked/upgraded "
+              f"{C.dim(f'({_fmt_duration(elapsed)})')}")
+    else:
+        print(f"  {C.red('[!]')} {fail_count} package(s) failed to upgrade "
+              f"{C.dim(f'({_fmt_duration(elapsed)})')}")
+
+    return fail_count == 0
+
+
+# ===========================================================================
 # MAIN
 # ===========================================================================
 
@@ -704,11 +823,12 @@ def main():
         formatter_class=argparse.RawDescriptionHelpFormatter,
         epilog=(
             "Examples:\n"
-            "  python s1_update.py              # Update everything (app + rules)\n"
+            "  python s1_update.py              # Update everything (app + rules + deps)\n"
             "  python s1_update.py --app        # Update application files only\n"
             "  python s1_update.py --rules      # Update detection rules only\n"
+            "  python s1_update.py --deps       # Upgrade Python packages only\n"
             "  python s1_update.py --check      # Dry run (show what would change)\n"
-            "  python s1_update.py --force      # Force re-download everything\n"
+            "  python s1_update.py --force      # Force re-download/reinstall everything\n"
         ),
     )
     parser.add_argument("--version", action="version",
@@ -717,21 +837,27 @@ def main():
                         help="Update application files only")
     parser.add_argument("--rules", action="store_true",
                         help="Update detection rules only (ATT&CK, Sigma, YARA)")
+    parser.add_argument("--deps", action="store_true",
+                        help="Upgrade Python packages only (pyyaml, networkx, pyod, "
+                             "yara-python, iocextract, mitreattack-python, certifi)")
     parser.add_argument("--check", action="store_true",
                         help="Check for updates without downloading (dry run)")
     parser.add_argument("--force", action="store_true",
-                        help="Force re-download regardless of current state")
+                        help="Force re-download/reinstall regardless of current state")
     args = parser.parse_args()
 
     print_banner()
 
-    # If neither --app nor --rules specified, do both
-    do_app   = args.app or (not args.app and not args.rules)
-    do_rules = args.rules or (not args.app and not args.rules)
+    # If none of --app/--rules/--deps specified, do all three
+    any_scope = args.app or args.rules or args.deps
+    do_app   = args.app or not any_scope
+    do_rules = args.rules or not any_scope
+    do_deps  = args.deps or not any_scope
 
     t_start = time.time()
     app_ok   = True
     rules_ok = True
+    deps_ok  = True
 
     if do_app:
         app_ok = update_app(check=args.check, force=args.force)
@@ -739,31 +865,33 @@ def main():
     if do_rules:
         rules_ok = update_rules(check=args.check, force=args.force)
 
+    if do_deps:
+        deps_ok = update_deps(check=args.check, force=args.force)
+
     # -- Final report --
     total_elapsed = time.time() - t_start
     print()
     print(_separator("Done"))
     print()
 
-    if do_app and do_rules:
-        if app_ok and rules_ok:
+    ran = [(name, ok) for name, enabled, ok in
+           [("application", do_app, app_ok),
+            ("rules", do_rules, rules_ok),
+            ("dependencies", do_deps, deps_ok)]
+           if enabled]
+
+    if len(ran) > 1:
+        if all(ok for _, ok in ran):
             print(f"  {C.green('[OK]')} Everything updated successfully "
                   f"{C.dim(f'(total: {_fmt_duration(total_elapsed)})')}")
         else:
-            parts = []
-            if not app_ok:
-                parts.append("application")
-            if not rules_ok:
-                parts.append("rules")
-            print(f"  {C.yellow('[!]')} Some errors occurred: {', '.join(parts)} "
+            failed = [name for name, ok in ran if not ok]
+            print(f"  {C.yellow('[!]')} Some errors occurred: {', '.join(failed)} "
                   f"{C.dim(f'(total: {_fmt_duration(total_elapsed)})')}")
-    elif do_app:
-        status = C.green("OK") if app_ok else C.red("errors occurred")
-        print(f"  Application update: {status} "
-              f"{C.dim(f'({_fmt_duration(total_elapsed)})')}")
-    else:
-        status = C.green("OK") if rules_ok else C.red("errors occurred")
-        print(f"  Rules update: {status} "
+    elif ran:
+        name, ok = ran[0]
+        status = C.green("OK") if ok else C.red("errors occurred")
+        print(f"  {name.capitalize()} update: {status} "
               f"{C.dim(f'({_fmt_duration(total_elapsed)})')}")
 
     print()

@@ -6,7 +6,7 @@ Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 2
 
 ![Python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-3.4.0-orange)
+![Version](https://img.shields.io/badge/version-3.4.1-orange)
 
 ---
 
@@ -230,7 +230,7 @@ CSV file
   +-- ReportGenerator ------ JSON output (30 sections)
   +-- s1_report.py --------- HTML dashboard generation
 
-s1_update.py --------------- Unified updater: app files + detection rules (no git required)
+s1_update.py --------------- Unified updater: app files + detection rules + Python packages (no git required)
 ```
 
 ## Output Structure
@@ -306,14 +306,15 @@ If you don't want to install the build tools, the analyzer works without YARA �
 One tool to update everything — **no git required**.
 
 ```bash
-python s1_update.py              # Update everything (app + rules)
+python s1_update.py              # Update everything (app + rules + deps)
 python s1_update.py --app        # Update application files only
 python s1_update.py --rules      # Update detection rules only
+python s1_update.py --deps       # Upgrade Python packages only
 python s1_update.py --check      # Dry run (show what would change)
-python s1_update.py --force      # Force re-download everything
+python s1_update.py --force      # Force re-download/reinstall everything
 ```
 
-Without arguments, `s1_update.py` performs a **full update**: application files AND detection rules in one pass.
+Without arguments, `s1_update.py` performs a **full update**: application files, detection rules, AND Python package dependencies in one pass — so a single command keeps everything reproducibly up to date.
 
 **Application update** — compares your local files with the GitHub repository via SHA1 hashes and incrementally downloads only what has changed or is missing:
 
@@ -371,13 +372,40 @@ Without arguments, `s1_update.py` performs a **full update**: application files 
       YARA    : 4964 rules (unchanged)
 ```
 
+**Dependencies update** — upgrades the optional Python packages `s1_analyzer.py` uses via `pip`, so `s1_update.py` alone keeps app, rules, *and* your environment current:
+
+```
+  === Dependencies Update ===============================
+
+  [*] Checking installed packages...
+      pyyaml                : 6.0.3
+      networkx              : 3.6.1
+      pyod                  : not installed
+      yara-python           : 4.5.4
+      iocextract            : 1.16.1
+      mitreattack-python    : 6.1.0
+      certifi               : 2026.5.20
+
+  [*] Upgrading 6 package(s)...
+
+  [OK] mitreattack-python: 6.1.0 -> 6.2.0
+  [OK] certifi: 2026.5.20 -> 2026.7.22
+  [OK] pyyaml: already up to date (6.0.3)
+  ...
+
+  [OK] 6 package(s) checked/upgraded (2.5s)
+```
+
+A package that isn't installed is left alone (not treated as an error) unless combined with `--force`.
+
 | Command | Description |
 |---------|-------------|
-| `python s1_update.py` | Full update: application files + detection rules |
+| `python s1_update.py` | Full update: application files + detection rules + Python packages |
 | `python s1_update.py --app` | Application files only (incremental SHA1 comparison) |
 | `python s1_update.py --rules` | Detection rules only (ATT&CK, Sigma, YARA) |
-| `python s1_update.py --check` | Dry run — see what would change without downloading |
-| `python s1_update.py --force` | Force re-download everything from scratch |
+| `python s1_update.py --deps` | Python packages only (pyyaml, networkx, pyod, yara-python, iocextract, mitreattack-python, certifi) |
+| `python s1_update.py --check` | Dry run — see what would change without downloading/installing |
+| `python s1_update.py --force` | Force re-download/reinstall everything from scratch |
 | `python s1_update.py --version` | Display version |
 
 How it works:
