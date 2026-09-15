@@ -1,5 +1,16 @@
 # Changelog
 
+## [3.7.0] - 2026-09-15
+
+### Added — plain-language summary and less clutter for non-expert readers
+
+Direct response to user feedback after live testing: the report was hard to read for someone who isn't a SOC analyst, and the sheer number of sections showing "nothing found" made it feel noisy/unclear even when that emptiness was legitimate (verified separately: on a real test CSV, ~2/3 of empty sections were empty because that CSV simply didn't contain that event type, not a detection bug).
+
+- **Executive summary panel** (`renderExecutiveSummary` in `s1_report.py`) — a plain-language panel shown above the technical verdict hero: what happened (from the independent scenario narrative, falling back to the strongest evidence line), how many SentinelOne vs. independent findings support the conclusion, the verdict in one plain word (Likely malicious / Suspicious / Undetermined / Probably benign / Benign), and the top actionable recommendation. Built entirely from data already computed elsewhere (`scenario_reconstruction`, `verdict.recommendations`, `verdict.evidence_tp_sources`) — no new analysis, purely a simpler restatement.
+- **Auto-collapsed empty sections + counter** — a section whose body is just the standard "No X detected/available" empty-state message (used consistently by ~25 render functions already) is now auto-collapsed by default, and a "N of M sections have findings" line is shown above the section list so a reader isn't stuck scrolling past a dozen empty panels to find the ones with actual content.
+
+**Verification note**: an earlier pass of manual browser-less verification for this and the previous (v3.6.1) fix used a Node.js DOM mock whose `textContent` setter didn't update `innerHTML` the way real browsers do — since the report's `esc()` helper works by setting `textContent` then reading back `innerHTML`, every `esc()`-escaped value silently came back empty, and a check for "any French text present" trivially passed on blank output. Caught by testing the executive summary panel's own actual content (found it empty) rather than only checking for the *absence* of a specific bad string. Fixed the mock to properly escape text on `textContent` assignment (matching real DOM behavior) and re-ran full verification: 112,500+ real rendered characters across all panels, zero French leaks, executive summary confirmed populated with correct real content. 51/51 tests still passing.
+
 ## [3.6.1] - 2026-09-15
 
 ### Fixed — French text leaking into the (English-only) report

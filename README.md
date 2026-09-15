@@ -6,7 +6,7 @@ Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 2
 
 ![Python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-3.6.1-orange)
+![Version](https://img.shields.io/badge/version-3.7.0-orange)
 
 ---
 
@@ -175,9 +175,10 @@ The analyzer displays detailed progress with spinners, progress bars, and timing
 
 The self-contained HTML report includes:
 
+- **Plain-language summary** — a non-technical "what happened / how confident / what to do" panel above the technical verdict, generated from the same data (independent narrative, evidentiary sources, recommendations) — no separate analysis
 - **Verdict hero** with color-zoned gauge (green/yellow/orange/red), score, and confidence level
 - **Clickable metric cards** — jump directly to any section
-- **Interactive sections** — collapsible, with badge counts, sortable tables
+- **Interactive sections** — collapsible, with badge counts, sortable tables; sections with no findings auto-collapse with a "N of M sections have findings" counter so an empty CSV export doesn't bury the sections that matter
 - **MITRE ATT&CK heatmap** — tactic/technique coverage
 - **Kill Chain flow** — visual ATT&CK phase progression with tactic-colored cards
 - **C2 Infrastructure** — correlated domain/IP view with DNS and connection evidence

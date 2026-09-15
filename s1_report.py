@@ -420,6 +420,7 @@ tbody tr:nth-child(even):hover td{background:var(--surface3);}
 </div>
 
 <div id="data-quality-banner"></div>
+<div id="exec-summary"></div>
 <div id="verdict-hero"></div>
 <div id="bento-grid" class="bento-grid"></div>
 <div id="charts-row"></div>
@@ -553,6 +554,61 @@ function renderDataQuality(){
   items.forEach(function(it){h+='<li>'+it+'</li>';});
   h+='</ul></div></div>';
   document.getElementById('data-quality-banner').innerHTML=h;
+}
+
+// ── EXECUTIVE SUMMARY — plain-language, non-technical-reader-first panel.
+// Shown before the technical verdict hero. Built entirely from data already
+// computed elsewhere (scenario narrative, verdict, recommendations) — no
+// new analysis, just a simpler restatement for someone who isn't a SOC
+// analyst.
+function renderExecutiveSummary(){
+  var v=DATA.verdict||{};
+  var id=DATA.identification||{};
+  var sr=DATA.scenario_reconstruction||{};
+  var recs=v.recommendations||[];
+  var vt=v.verdict||'';
+
+  var verdictWord='Undetermined', tone='medium';
+  if(vt.indexOf('TRUE POSITIVE')>=0){verdictWord='Likely malicious';tone='critical';}
+  else if(vt.indexOf('SUSPICIOUS')>=0){verdictWord='Suspicious';tone='high';}
+  else if(vt.indexOf('UNDETERMINED')>=0){verdictWord='Undetermined';tone='medium';}
+  else if(vt.indexOf('LIKELY FALSE')>=0||vt.indexOf('LIKELY BENIGN')>=0){verdictWord='Probably benign';tone='low';}
+  else{verdictWord='Benign';tone='low';}
+  var toneColor={critical:'var(--critical)',high:'var(--high)',medium:'var(--medium)',low:'var(--low)'}[tone];
+  var toneBg={critical:'var(--critical-bg)',high:'var(--high-bg)',medium:'var(--medium-bg)',low:'var(--low-bg)'}[tone];
+
+  // What happened — lead with the independent narrative if one exists,
+  // otherwise the strongest evidence line, otherwise a clean-bill sentence.
+  var whatHappened;
+  if(sr.narrative && sr.narrative.indexOf('No independent scenario')<0){
+    var parts=sr.narrative.split('. ');
+    whatHappened=parts.slice(0,2).join('. ');
+    if(!/[.!?]$/.test(whatHappened))whatHappened+='.';
+  }else if((v.evidence_tp||[]).length){
+    whatHappened='Main finding: '+v.evidence_tp[0].replace(/^\[[^\]]+\]\s*/,'')+'.';
+  }else{
+    whatHappened='No significant suspicious activity was identified in the analyzed events.';
+  }
+
+  // Corroboration — how independent is this conclusion (never compares
+  // against SentinelOne's own verdict, only states our own evidence mix).
+  var srcs=v.evidence_tp_sources||[];
+  var indepN=srcs.filter(function(s){return s==='independent';}).length;
+  var s1N=srcs.filter(function(s){return s==='s1_indicators';}).length;
+  var corrob='';
+  if(s1N>0&&indepN>0)corrob=s1N+' SentinelOne indicator(s) and '+indepN+' independent detection(s) (Sigma/YARA/network/registry/etc.) support this.';
+  else if(indepN>0)corrob=indepN+' independent detection(s) support this, found directly from the raw event data (not from SentinelOne’s own detections).';
+  else if(s1N>0)corrob='This is based on '+s1N+' behavioral indicator(s) SentinelOne itself detected; our independent analysis of the raw events found no additional corroborating evidence.';
+
+  var h='<div style="max-width:1440px;margin:16px auto 0;padding:20px 24px;border-radius:var(--radius);'+
+        'background:'+toneBg+';border:1px solid '+toneColor+'44;">';
+  h+='<div style="font-size:11px;text-transform:uppercase;letter-spacing:1.5px;font-weight:700;color:'+toneColor+';margin-bottom:8px">Summary (plain language)</div>';
+  h+='<div style="font-size:15px;line-height:1.6;color:var(--text)">'+esc(whatHappened)+(corrob?' '+esc(corrob):'')+'</div>';
+  h+='<div style="font-size:15px;margin-top:10px;padding-top:10px;border-top:1px solid '+toneColor+'33">'+
+     '→ <strong style="color:'+toneColor+'">'+esc(verdictWord)+'</strong>'+
+     (recs.length?' — '+esc(recs[0]):'')+'</div>';
+  h+='</div>';
+  document.getElementById('exec-summary').innerHTML=h;
 }
 
 function renderVerdictHero(){
@@ -1638,6 +1694,7 @@ function renderAll(){
   document.getElementById('brand-sub').textContent='SOC Analysis Report \u2014 '+(meta.generated_at||'');
 
   renderDataQuality();
+  renderExecutiveSummary();
   renderVerdictHero();
   renderBentoGrid();
   renderChartsRow();
@@ -1677,17 +1734,33 @@ function renderAll(){
     {id:'diagnosis', title:'Diagnosis & Verdict', badge:null, fn:renderDiagnosis, col:false},
   ];
 
+  // A section whose entire body is just a "No X detected/available" message
+  // (the standard empty-state pattern used by every render* function below)
+  // is auto-collapsed and counted separately, so a reader isn't stuck
+  // scrolling past a dozen "nothing here" panels to find the ones that
+  // actually have findings.
+  function isEmptyBody(body){
+    return body.length < 200 && body.indexOf('color:var(--dim)">No ') >= 0;
+  }
+
   var html='';
+  var filledCount=0, emptyCount=0;
   sections.forEach(function(s){
     try{
       var body=s.fn();
-      html+=makeSection(s.id,s.title,s.badge,body,s.col);
+      var empty=isEmptyBody(body);
+      if(empty)emptyCount++;else filledCount++;
+      html+=makeSection(s.id,s.title,s.badge,body,empty||s.col);
     }catch(e){
+      filledCount++;
       html+=makeSection(s.id,s.title,'ERROR','<div class="alert-box danger">Error: '+esc(e.message)+'</div>',false);
       console.error('Section '+s.id+':',e);
     }
   });
-  document.getElementById('sections').innerHTML=html;
+  var counterHtml='<div style="max-width:1440px;margin:0 auto 10px;padding:0 4px;font-size:12px;color:var(--dim)">'+
+    filledCount+' of '+(filledCount+emptyCount)+' sections have findings'+
+    (emptyCount?' — the other '+emptyCount+' are collapsed below (click to expand)':'')+'.</div>';
+  document.getElementById('sections').innerHTML=counterHtml+html;
 
   // Footer
   var fw=meta.frameworks||{};
