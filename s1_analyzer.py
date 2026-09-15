@@ -92,7 +92,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # VERSION & METADATA
 # ---------------------------------------------------------------------------
-__version__  = "3.5.0"
+__version__  = "3.6.0"
 __author__   = "Florian Bertaux"
 __tool__     = "S1 Analyzer"
 
@@ -5166,6 +5166,187 @@ class VerdictEngine:
 
 
 # ===========================================================================
+# SCENARIO NARRATOR — independent scenario reconstruction
+# ===========================================================================
+
+class ScenarioNarrator:
+    """
+    Reconstructs a chronological attack-scenario narrative from RAW
+    telemetry only (process tree, network, files, registry, scheduled
+    tasks, scripts, cmdlines/LOLBins, direct LSASS access) — deliberately
+    never reads SentinelOne's own Behavioral Indicators or attack-chain
+    output (contrast with `kill_chain`, which is built entirely from S1's
+    own indicator->MITRE-tactic mapping). This exists so an analyst can
+    read "what our own independent analysis of the raw events says
+    happened" as a self-contained story, separate from whatever
+    SentinelOne itself concluded — the same evidentiary-independence
+    principle as VerdictEngine's source tracking, applied to narrative
+    instead of scoring.
+    """
+
+    PHASE_ORDER = ["Initial Execution", "Script & Payload Activity", "Persistence",
+                   "Credential Access", "Command & Control", "Data & Impact"]
+
+    def __init__(self, proc: "ProcessAnalyzer", net: "NetworkAnalyzer",
+                 files: "FileAnalyzer", reg: "RegistryAnalyzer",
+                 tasks: "TaskAnalyzer", scripts: "ScriptAnalyzer",
+                 cmdline_an: "CmdlineAnalyzer" = None,
+                 lsass: "LsassAnalyzer" = None):
+        self.proc = proc
+        self.net = net
+        self.files = files
+        self.reg = reg
+        self.tasks = tasks
+        self.scripts = scripts
+        self.cmdline_an = cmdline_an
+        self.lsass = lsass
+        self._phases = None
+
+    def _collect_phases(self) -> dict:
+        phases = {name: [] for name in self.PHASE_ORDER}
+
+        # ── Initial Execution ──
+        root = self.proc.get_root()
+        sev, desc = self.proc.get_attack_vector()
+        if sev:
+            phases["Initial Execution"].append({
+                "fact": f"Process launched via a high-risk vector: {desc}",
+                "timestamp": (root or {}).get("timestamp", ""),
+            })
+        elif root:
+            proc_name = root.get("display_name") or "the root process"
+            parent = root.get("parent_cmdline", "")
+            if parent:
+                phases["Initial Execution"].append({
+                    "fact": f"{proc_name} was launched by: {parent[:150]}",
+                    "timestamp": root.get("timestamp", ""),
+                })
+        for level, cmd in self.proc.get_full_parent_chain():
+            for exe, (sev2, desc2) in ATTACK_VECTOR_PARENTS.items():
+                if exe in cmd.lower():
+                    phases["Initial Execution"].append({
+                        "fact": f"Suspicious ancestor in execution chain ({level}): {exe} — {desc2}",
+                        "timestamp": "",
+                    })
+
+        # ── Script & Payload Activity ──
+        for finding in self.scripts.analyze():
+            phases["Script & Payload Activity"].append({
+                "fact": finding["description"],
+                "timestamp": finding.get("timestamp", ""),
+            })
+        if self.cmdline_an:
+            for f in self.cmdline_an.get_findings():
+                phases["Script & Payload Activity"].append({
+                    "fact": f["description"],
+                    "timestamp": f.get("timestamp", ""),
+                })
+
+        # ── Persistence ──
+        for h in self.reg.get_persistence_hits():
+            phases["Persistence"].append({
+                "fact": f"{h['label']}: {h['key']}",
+                "timestamp": h.get("timestamp", ""),
+            })
+        for t in self.tasks.has_suspicious_tasks():
+            phases["Persistence"].append({
+                "fact": f"Suspicious scheduled task: {t.get('task_name','')} ({t.get('event_type','')})",
+                "timestamp": t.get("timestamp", ""),
+            })
+
+        # ── Credential Access ──
+        if self.lsass:
+            for hit in self.lsass.get_hits():
+                if hit["event_type"] == "BehavioralIndicator":
+                    continue  # S1-derived, not raw telemetry — excluded here
+                phases["Credential Access"].append({
+                    "fact": f"Direct LSASS access via {hit['event_type']}: "
+                            f"{hit.get('access') or 'unknown access rights'}",
+                    "timestamp": hit.get("timestamp", ""),
+                })
+
+        # ── Command & Control ──
+        for d in self.net.get_suspicious_external():
+            phases["Command & Control"].append({
+                "fact": f"Connection to unidentified IP {d['dst_ip']}:{d['dst_port']}",
+                "timestamp": d.get("timestamp", ""),
+            })
+        for b in self.net.detect_c2_beacon():
+            phases["Command & Control"].append({
+                "fact": f"Beacon-like connection pattern to {b['dst_ip']}:{b['dst_port']} "
+                        f"({b['count']} connections, interval={b['mean_interval_s']}s, "
+                        f"CV={b['cv']})",
+                "timestamp": b.get("first_seen", ""),
+            })
+        for ua in self.net.get_suspicious_user_agents():
+            phases["Command & Control"].append({
+                "fact": ua["description"],
+                "timestamp": ua.get("timestamp", ""),
+            })
+
+        # ── Data & Impact ──
+        for s in self.files.get_suspicious_files()[:5]:
+            phases["Data & Impact"].append({
+                "fact": f"Suspicious file: {s['path']}",
+                "timestamp": "",
+            })
+        mass, creations, deletions = self.files.detect_mass_operation()
+        if mass and not self.files.is_build_activity():
+            phases["Data & Impact"].append({
+                "fact": f"Mass file operations: {creations} creations + {deletions} "
+                        f"deletions (possible ransomware/wiper pattern)",
+                "timestamp": "",
+            })
+
+        return phases
+
+    def build_timeline(self) -> list:
+        """Ordered list of {phase, fact_count, start_timestamp, end_timestamp,
+        facts: [...]}. Only includes phases with >=1 independently-derived fact."""
+        if self._phases is None:
+            self._phases = self._collect_phases()
+        timeline = []
+        for name in self.PHASE_ORDER:
+            facts = self._phases[name]
+            if not facts:
+                continue
+            timestamps = sorted(f["timestamp"] for f in facts if f["timestamp"])
+            timeline.append({
+                "phase":           name,
+                "fact_count":      len(facts),
+                "start_timestamp": timestamps[0] if timestamps else "",
+                "end_timestamp":   timestamps[-1] if timestamps else "",
+                "facts":           facts,
+            })
+        return timeline
+
+    def build_narrative(self) -> str:
+        """Prose summary generated from the same phase data as build_timeline()
+        — template-based (not free-form generation), so every sentence traces
+        directly back to a specific independently-derived fact."""
+        timeline = self.build_timeline()
+        if not timeline:
+            return ("No independent scenario could be reconstructed from raw telemetry "
+                     "alone. Either this CSV contains no actionable raw-event signal, or "
+                     "the only evidence for this alert comes from SentinelOne's own "
+                     "behavioral detections — see the indicator list and its "
+                     "evidentiary-source tags for details.")
+        sentences = []
+        for phase in timeline:
+            lead_fact = phase["facts"][0]["fact"]
+            extra = len(phase["facts"]) - 1
+            ts = f" at {phase['start_timestamp']}" if phase["start_timestamp"] else ""
+            if extra > 0:
+                sentences.append(
+                    f"{phase['phase']}{ts}: {lead_fact} "
+                    f"(+{extra} more independent finding(s) in this phase)."
+                )
+            else:
+                sentences.append(f"{phase['phase']}{ts}: {lead_fact}.")
+        return " ".join(sentences)
+
+
+# ===========================================================================
 # TIMELINE BUILDER
 # ===========================================================================
 
@@ -5263,6 +5444,8 @@ class ReportGenerator:
         self.ioc_an       = ioc_an
         self.corr         = correlation
         self.data_quality = data_quality or {}
+        self.scenario_narrator = ScenarioNarrator(proc, net, files, reg, tasks,
+                                                    scripts, cmdline_an, lsass)
 
     # ------------------------------------------------------------------ #
     @staticmethod
@@ -7175,6 +7358,10 @@ class ReportGenerator:
             "threat_intelligence":   ti_data,
             "c2_infrastructure":     c2_infra,
             "kill_chain":            kill_chain,
+            "scenario_reconstruction": {
+                "narrative": self.scenario_narrator.build_narrative(),
+                "timeline":  self.scenario_narrator.build_timeline(),
+            },
             "analyst_notes":         analyst_notes,
         }
 

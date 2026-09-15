@@ -1490,6 +1490,40 @@ function renderKillChain(){
   return h;
 }
 
+// ── SCENARIO RECONSTRUCTION — built only from raw telemetry, never from
+// SentinelOne's own Behavioral Indicators (contrast with Kill Chain above,
+// which orders S1's own indicator->tactic mapping). ──
+function renderScenarioReconstruction(){
+  var sr=DATA.scenario_reconstruction||{};
+  var narrative=sr.narrative||'';
+  var timeline=sr.timeline||[];
+  var h='';
+  if(narrative){
+    h+='<div class="alert-box info" style="margin-bottom:16px">';
+    h+='<span>&#128220;</span><div><strong>Independent narrative</strong> '+
+       '<span style="font-size:11px;opacity:.7">(raw telemetry only — not derived from SentinelOne’s own detections)</span>'+
+       '<div style="margin-top:6px">'+esc(narrative)+'</div></div></div>';
+  }
+  if(!timeline.length){
+    h+='<p style="color:var(--dim)">No independent scenario phases identified from raw telemetry.</p>';
+    return h;
+  }
+  timeline.forEach(function(phase){
+    h+='<div style="margin-bottom:14px">';
+    h+='<div class="chart-title">'+esc(phase.phase)+
+       '<span style="font-weight:400;opacity:.6;margin-left:8px;font-size:11px">'+
+       phase.fact_count+' finding(s)'+(phase.start_timestamp?' · '+esc(phase.start_timestamp):'')+'</span></div>';
+    h+='<ul class="ev-list">';
+    (phase.facts||[]).forEach(function(f){
+      h+='<li class="ev-item ev-tp"><span class="ev-icon">&#8853;</span><span>'+esc(f.fact)+
+         (f.timestamp?' <span style="opacity:.5;font-size:11px">('+esc(f.timestamp)+')</span>':'')+
+         '</span></li>';
+    });
+    h+='</ul></div>';
+  });
+  return h;
+}
+
 // ── ANALYST NOTES ──
 function renderAnalystNotes(){
   var notes=DATA.analyst_notes||[];
@@ -1620,27 +1654,28 @@ function renderAll(){
     {id:'mitre',     title:'4. MITRE ATT\u0026CK Mapping', badge:((DATA.mitre_attack||{}).techniques||[]).length+' technique(s)', fn:renderMitre, col:false},
     {id:'chains',    title:'5. Attack Chains', badge:(DATA.attack_chains||[]).length+' chain(s)', fn:renderAttackChains, col:true},
     {id:'killchain', title:'6. Kill Chain (ATT\u0026CK)', badge:(DATA.kill_chain||[]).length+' phase(s)', fn:renderKillChain, col:false},
-    {id:'scripts',   title:'7. Script Content Analysis', badge:((DATA.scripts||{}).findings||[]).length+' finding(s)', fn:renderScripts, col:false},
-    {id:'decoded',   title:'8. Decoded Payloads', badge:((DATA.scripts||{}).decoded_payloads||[]).length+' payload(s)', fn:renderDecodedPayloads, col:false},
-    {id:'modules',   title:'9. Loaded Modules (DLLs)', badge:((DATA.modules||{}).suspicious||[]).length+' suspicious', fn:renderModules, col:true},
-    {id:'network',   title:'10. Network Analysis', badge:(m.ext_connections||0)+' ext \u00B7 '+(m.unknown_connections||0)+' unknown', fn:renderNetwork, col:false},
-    {id:'c2',        title:'11. C2 Infrastructure', badge:(DATA.c2_infrastructure||[]).length+' target(s)', fn:renderC2Infra, col:false},
-    {id:'ptree',     title:'12. Process Tree', badge:(function(){var pt=DATA.process_tree||{};var c=(pt.children||[]).length;return c>0?c+' child process(es)':null;})(), fn:renderProcessTree, col:false},
-    {id:'files',     title:'13. File Activity', badge:(m.suspicious_files||0)+' suspicious', fn:renderFiles, col:true},
-    {id:'registry',  title:'14. Registry Activity', badge:(m.persistence_keys||0)+' persistence', fn:renderRegistry, col:true},
-    {id:'vt',        title:'15. VirusTotal Analysis', badge:(DATA.virustotal||[]).length+' lookup(s)', fn:renderVirusTotal, col:false},
-    {id:'ti',        title:'16. Threat Intelligence (MB/OTX/Shodan)', badge:((DATA.threat_intelligence||{}).malwarebazaar||[]).length+((DATA.threat_intelligence||{}).otx_hashes||[]).length+((DATA.threat_intelligence||{}).otx_ips||[]).length+((DATA.threat_intelligence||{}).otx_domains||[]).length+((DATA.threat_intelligence||{}).shodan||[]).length+' hit(s)', fn:renderThreatIntelligence, col:false},
-    {id:'sigma',     title:'17. Sigma Rule Matches', badge:(m.sigma_matches||0)+' match(es)', fn:renderSigma, col:true},
-    {id:'pgraph',    title:'18. Process Graph Analysis (NetworkX)', badge:(m.graph_anomalies||0)+' anomaly/anomalies', fn:renderProcessGraph, col:true},
-    {id:'stats',     title:'19. Statistical Anomaly Detection', badge:(m.stat_outliers||0)+' outlier(s)', fn:renderStatistical, col:true},
-    {id:'yara',      title:'20. YARA Rule Matches', badge:(m.yara_matches||0)+' match(es)', fn:renderYara, col:true},
-    {id:'atkenrich', title:'21. ATT\u0026CK Enrichment (MITRE)', badge:(function(){var e=DATA.mitre_enrichment||{};var g=(e.groups||[]).length,m=(e.mitigations||[]).length;return g+m>0?g+' group(s) \u00B7 '+m+' mitigation(s)':null;})(), fn:renderAttackEnrichment, col:true},
-    {id:'ioc',       title:'22. IOC Extraction (iocextract)', badge:(function(){var iocs=DATA.ioc_extraction||{};var t=0;Object.values(iocs).forEach(function(v){if(Array.isArray(v))t+=v.length;});return t>0?t+' IOC(s)':null;})(), fn:renderIOC, col:true},
-    {id:'notes',     title:'23. Analyst Notes', badge:(DATA.analyst_notes||[]).length+' note(s)', fn:renderAnalystNotes, col:false},
-    {id:'lsass',     title:'24. LSASS Access', badge:(DATA.lsass||[]).length+' hit(s)', fn:renderLsass, col:true},
-    {id:'cmdline',   title:'25. Command Line Analysis', badge:(function(){var c=DATA.cmdline_analysis||{};return ((c.findings||[]).length+(c.high_entropy||[]).length)||null;})(), fn:renderCmdline, col:true},
-    {id:'temporal',  title:'26. Temporal Sequences', badge:(DATA.temporal_sequences||[]).length>0?(DATA.temporal_sequences||[]).length+' sequence(s)':null, fn:renderTemporal, col:true},
-    {id:'tasks',     title:'27. Scheduled Tasks', badge:(DATA.tasks||[]).length+' task(s)', fn:renderTasks, col:true},
+    {id:'scenario',  title:'7. Scenario Reconstruction (independent)', badge:((DATA.scenario_reconstruction||{}).timeline||[]).length+' phase(s)', fn:renderScenarioReconstruction, col:false},
+    {id:'scripts',   title:'8. Script Content Analysis', badge:((DATA.scripts||{}).findings||[]).length+' finding(s)', fn:renderScripts, col:false},
+    {id:'decoded',   title:'9. Decoded Payloads', badge:((DATA.scripts||{}).decoded_payloads||[]).length+' payload(s)', fn:renderDecodedPayloads, col:false},
+    {id:'modules',   title:'10. Loaded Modules (DLLs)', badge:((DATA.modules||{}).suspicious||[]).length+' suspicious', fn:renderModules, col:true},
+    {id:'network',   title:'11. Network Analysis', badge:(m.ext_connections||0)+' ext \u00B7 '+(m.unknown_connections||0)+' unknown', fn:renderNetwork, col:false},
+    {id:'c2',        title:'12. C2 Infrastructure', badge:(DATA.c2_infrastructure||[]).length+' target(s)', fn:renderC2Infra, col:false},
+    {id:'ptree',     title:'13. Process Tree', badge:(function(){var pt=DATA.process_tree||{};var c=(pt.children||[]).length;return c>0?c+' child process(es)':null;})(), fn:renderProcessTree, col:false},
+    {id:'files',     title:'14. File Activity', badge:(m.suspicious_files||0)+' suspicious', fn:renderFiles, col:true},
+    {id:'registry',  title:'15. Registry Activity', badge:(m.persistence_keys||0)+' persistence', fn:renderRegistry, col:true},
+    {id:'vt',        title:'16. VirusTotal Analysis', badge:(DATA.virustotal||[]).length+' lookup(s)', fn:renderVirusTotal, col:false},
+    {id:'ti',        title:'17. Threat Intelligence (MB/OTX/Shodan)', badge:((DATA.threat_intelligence||{}).malwarebazaar||[]).length+((DATA.threat_intelligence||{}).otx_hashes||[]).length+((DATA.threat_intelligence||{}).otx_ips||[]).length+((DATA.threat_intelligence||{}).otx_domains||[]).length+((DATA.threat_intelligence||{}).shodan||[]).length+' hit(s)', fn:renderThreatIntelligence, col:false},
+    {id:'sigma',     title:'18. Sigma Rule Matches', badge:(m.sigma_matches||0)+' match(es)', fn:renderSigma, col:true},
+    {id:'pgraph',    title:'19. Process Graph Analysis (NetworkX)', badge:(m.graph_anomalies||0)+' anomaly/anomalies', fn:renderProcessGraph, col:true},
+    {id:'stats',     title:'20. Statistical Anomaly Detection', badge:(m.stat_outliers||0)+' outlier(s)', fn:renderStatistical, col:true},
+    {id:'yara',      title:'21. YARA Rule Matches', badge:(m.yara_matches||0)+' match(es)', fn:renderYara, col:true},
+    {id:'atkenrich', title:'22. ATT\u0026CK Enrichment (MITRE)', badge:(function(){var e=DATA.mitre_enrichment||{};var g=(e.groups||[]).length,m=(e.mitigations||[]).length;return g+m>0?g+' group(s) \u00B7 '+m+' mitigation(s)':null;})(), fn:renderAttackEnrichment, col:true},
+    {id:'ioc',       title:'23. IOC Extraction (iocextract)', badge:(function(){var iocs=DATA.ioc_extraction||{};var t=0;Object.values(iocs).forEach(function(v){if(Array.isArray(v))t+=v.length;});return t>0?t+' IOC(s)':null;})(), fn:renderIOC, col:true},
+    {id:'notes',     title:'24. Analyst Notes', badge:(DATA.analyst_notes||[]).length+' note(s)', fn:renderAnalystNotes, col:false},
+    {id:'lsass',     title:'25. LSASS Access', badge:(DATA.lsass||[]).length+' hit(s)', fn:renderLsass, col:true},
+    {id:'cmdline',   title:'26. Command Line Analysis', badge:(function(){var c=DATA.cmdline_analysis||{};return ((c.findings||[]).length+(c.high_entropy||[]).length)||null;})(), fn:renderCmdline, col:true},
+    {id:'temporal',  title:'27. Temporal Sequences', badge:(DATA.temporal_sequences||[]).length>0?(DATA.temporal_sequences||[]).length+' sequence(s)':null, fn:renderTemporal, col:true},
+    {id:'tasks',     title:'28. Scheduled Tasks', badge:(DATA.tasks||[]).length+' task(s)', fn:renderTasks, col:true},
     {id:'diagnosis', title:'Diagnosis & Verdict', badge:null, fn:renderDiagnosis, col:false},
   ];
 

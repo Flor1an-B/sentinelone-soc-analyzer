@@ -6,7 +6,7 @@ Analyzes Deep Visibility (DV) and Scalable Data Lake (SDL) CSV exports through 2
 
 ![Python](https://img.shields.io/badge/python-3.10--3.13-blue)
 ![License](https://img.shields.io/badge/license-MIT-green)
-![Version](https://img.shields.io/badge/version-3.5.0-orange)
+![Version](https://img.shields.io/badge/version-3.6.0-orange)
 
 ---
 
@@ -243,11 +243,15 @@ alert_20260310_143000/
 +-- report.html     # Self-contained interactive dashboard
 ```
 
-### JSON Sections (31)
+### JSON Sections (32)
 
-`meta` - `identification` - `data_quality` - `verdict` - `metrics` - `timeline` - `behavioral_indicators` - `severity_distribution` - `attack_chains` - `mitre_attack` - `scripts` - `modules` - `network` - `process_tree` - `files` - `registry` - `tasks` - `lsass` - `cmdline_analysis` - `temporal_sequences` - `sigma_matches` - `process_graph` - `statistical_analysis` - `yara_matches` - `mitre_enrichment` - `ioc_extraction` - `virustotal` - `threat_intelligence` - `c2_infrastructure` - `kill_chain` - `analyst_notes`
+`meta` - `identification` - `data_quality` - `verdict` - `metrics` - `timeline` - `behavioral_indicators` - `severity_distribution` - `attack_chains` - `mitre_attack` - `scripts` - `modules` - `network` - `process_tree` - `files` - `registry` - `tasks` - `lsass` - `cmdline_analysis` - `temporal_sequences` - `sigma_matches` - `process_graph` - `statistical_analysis` - `yara_matches` - `mitre_enrichment` - `ioc_extraction` - `virustotal` - `threat_intelligence` - `c2_infrastructure` - `kill_chain` - `scenario_reconstruction` - `analyst_notes`
 
 `data_quality` surfaces CSV schema warnings, skipped rows, and Sigma/YARA/ATT&CK rule load-error counts — check it (or the HTML data-quality banner) before trusting a verdict on an unusual CSV export.
+
+`verdict.contribution_breakdown` / `evidence_tp_sources` / `confidence_basis` tag every scoring finding as `s1_indicators` (from SentinelOne's own Behavioral Indicators engine) or `independent` (from our own Sigma/YARA/heuristic analysis of raw telemetry) — the tool never reads SentinelOne's own verdict/classification, so this is the mechanism for judging how independently-corroborated a verdict actually is.
+
+`scenario_reconstruction` is a chronological narrative + phase timeline built **only** from raw telemetry (process tree, network, files, registry, scripts, cmdlines/LOLBins, direct LSASS access) — deliberately independent of SentinelOne's own indicators, unlike `kill_chain` which orders S1's own indicator→MITRE-tactic mapping.
 
 ## Dependencies
 

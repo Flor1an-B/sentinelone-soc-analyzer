@@ -1,5 +1,13 @@
 # Changelog
 
+## [3.6.0] - 2026-09-15
+
+### Added — independent scenario reconstruction
+
+- **`ScenarioNarrator`** (new analyzer) and JSON section **`scenario_reconstruction`** (`narrative` + `timeline`) — reconstructs a chronological attack-scenario story built **only** from raw telemetry already gathered by the independent analyzers (process tree/attack-vector, network/beacon/UA, files, registry persistence, scheduled tasks, script content, cmdline/LOLBins findings, direct LSASS access). Deliberately never touches `BehaviorAnalyzer`/SentinelOne's own indicators — contrast with the existing `kill_chain` section, which is built entirely from S1's own indicator→MITRE-tactic mapping. Groups findings into 6 phases (Initial Execution, Script & Payload Activity, Persistence, Credential Access, Command & Control, Data & Impact), each phase is chronologically bounded by its own earliest/latest observed timestamp, and every sentence of the generated prose narrative traces back to a specific listed fact (template-based, not free-form generation) so nothing in the narrative is unaccountable to the underlying data.
+- **HTML report** — new section "7. Scenario Reconstruction (independent)" (existing sections 7-27 renumbered to 8-28): the prose narrative in a highlighted panel, followed by the phase-by-phase fact list with per-phase timestamps.
+- **Tests** — `TestScenarioNarrator` (empty-input fallback, LOLBin cmdline correctly routed to the right phase, structural validation against a real sample CSV, narrative content sanity) plus an end-to-end structural check that `scenario_reconstruction` is present and well-formed. 51/51 tests passing.
+
 ## [3.5.0] - 2026-09-15
 
 ### Added — evidentiary provenance & independent-analysis strengthening
