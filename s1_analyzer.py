@@ -3974,6 +3974,7 @@ class YaraAnalyzer:
         self._hits:        list = []
         self._file_count   = 0
         self.rule_errors   = 0   # rule chunks that failed to compile (skipped, not loaded)
+        self.rule_error_samples: list = []  # up to 10 "rule_name: exception" strings
         self._load()
         if self._rule_sets:
             self._scan()
@@ -4034,14 +4035,16 @@ class YaraAnalyzer:
             except Exception:
                 # Fallback: compile individually to skip bad rules
                 for j, rule_src in enumerate(batch):
+                    name_m = re.match(r'(?:private\s+)?rule\s+(\w+)', rule_src)
+                    rule_name = name_m.group(1) if name_m else f"{filepath.stem}_{b+j}"
                     try:
                         compiled = _yara.compile(source=import_block + rule_src)
-                        name_m = re.match(r'(?:private\s+)?rule\s+(\w+)', rule_src)
-                        key = name_m.group(1) if name_m else f"{filepath.stem}_{b+j}"
-                        self._rule_sets[key] = compiled
+                        self._rule_sets[rule_name] = compiled
                         loaded += 1
-                    except Exception:
+                    except Exception as e:
                         self.rule_errors += 1
+                        if len(self.rule_error_samples) < 10:
+                            self.rule_error_samples.append(f"{rule_name}: {e}")
                         continue
         if loaded:
             self._file_count += loaded
@@ -8861,6 +8864,7 @@ def analyze(filepath: str, output_json: bool = False, output_html: bool = False,
         "csv_rows_skipped":   csv_rows_skipped,
         "sigma_load_errors":  sigma.load_errors if sigma else 0,
         "yara_rule_errors":   yara_an.rule_errors if yara_an else 0,
+        "yara_rule_error_samples": yara_an.rule_error_samples if yara_an else [],
         "attack_load_error":  mitre_enricher.load_error if mitre_enricher else "",
     }
 

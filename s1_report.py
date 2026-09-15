@@ -539,7 +539,12 @@ function renderDataQuality(){
   var items=[];
   (dq.csv_warnings||[]).forEach(function(w){items.push(esc(w));});
   if(dq.sigma_load_errors)items.push(dq.sigma_load_errors+' Sigma rule(s) failed to load and were skipped.');
-  if(dq.yara_rule_errors)items.push(dq.yara_rule_errors+' YARA rule(s) failed to compile and were skipped.');
+  if(dq.yara_rule_errors){
+    var _ye=dq.yara_rule_errors+' YARA rule(s) failed to compile and were skipped.';
+    var _samples=dq.yara_rule_error_samples||[];
+    if(_samples.length)_ye+='<ul style="margin:4px 0 0 18px;padding:0;font-size:12px;opacity:.85">'+_samples.map(function(s){return '<li>'+esc(s)+'</li>';}).join('')+'</ul>';
+    items.push(_ye);
+  }
   if(dq.attack_load_error)items.push('MITRE ATT&CK enrichment failed to load: '+esc(dq.attack_load_error));
   if(dq.csv_rows_skipped)items.push(dq.csv_rows_skipped+' of '+(dq.csv_rows_total||0)+' CSV row(s) were skipped (missing/malformed fields).');
   if(!items.length){document.getElementById('data-quality-banner').innerHTML='';return;}
