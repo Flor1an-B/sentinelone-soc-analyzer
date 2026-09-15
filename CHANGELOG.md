@@ -1,5 +1,18 @@
 # Changelog
 
+## [3.6.1] - 2026-09-15
+
+### Fixed — French text leaking into the (English-only) report
+
+Root-caused from live user testing: internal severity levels are French strings (`CRITIQUE`/`ELEVE`/`MOYEN`/`FAIBLE`/`INFO`, used pervasively as VerdictEngine scoring-logic keys) and 8 evidence-text f-strings across `_check_execution_context`/`_check_indicators`/`_check_script_content`/`_check_suspicious_modules`/`_check_process_graph`/`_check_yara`/`_check_cmdline`/`_check_user_agents` interpolated that raw value directly into user-facing text (e.g. `[SCRIPT CRITIQUE] ...`, `[YARA ELEVE] ...`) instead of translating it — while a few other sites in the same file already correctly translated (e.g. `MOYEN` → `"[MEDIUM] ..."`), confirming the inconsistency was accidental, not by design.
+
+- Added `SEVERITY_EN` translation map + `_sev_en()` helper; applied at all 8 live leak sites. Internal severity keys are intentionally left French everywhere else (used as scoring-logic dict keys throughout `VerdictEngine`/`INDICATOR_DB`; changing them would be high-risk for zero behavior change) — only the text actually shown to the user goes through translation.
+- Translated two knowledge-base dicts that were entirely in French and feed evidence text: `ATTACK_VECTOR_PARENTS` (17 entries, e.g. *"Webshell ou RCE via IIS"* → *"Webshell or RCE via IIS"*) and `PERSISTENCE_REG_PATTERNS` (13 entries, e.g. *"Cle Run : execution automatique a chaque logon"* → *"Run key: automatic execution on every logon"*).
+- `s1_report.py`'s YARA section built its own severity badge manually instead of going through the existing (correctly-translating) `sevBadge()` helper — fixed to reuse it.
+- One remaining site is inside `ReportGenerator.generate()`/`generate_html()`, which are dead code never called by `main()` (see the `s1_analyzer.py` audit in project history) — left as-is, no user-facing impact.
+
+**Verification**: rather than trust static code reading, actually executed the report's JS against a real generated dataset (`bypass.csv`) in a Node VM context with DOM stubs, calling all 23 section-render functions plus the 4 direct-DOM-write functions (verdict hero, bento grid, data-quality banner, MITRE heatmap) and inspecting their real rendered HTML output (65,000+ characters) for any of the 4 French severity words — confirmed zero occurrences. 51/51 tests still passing.
+
 ## [3.6.0] - 2026-09-15
 
 ### Added — independent scenario reconstruction

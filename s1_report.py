@@ -1194,13 +1194,11 @@ function renderYara(){
   var hits=DATA.yara_matches||[];
   if(hits.length===0)return '<p style="color:var(--dim)">No YARA rule matched.</p>';
   var h='';
-  var scls={CRITIQUE:'b-critical',ELEVE:'b-high'};
   hits.slice(0,20).forEach(function(hr){
-    var bcls=scls[hr.severity]||'b-medium';
     var tagHtml=(hr.tags&&hr.tags.length)?'<span style="font-size:11px;color:var(--dim)">Tags: '+esc(hr.tags.slice(0,5).join(', '))+'</span>':'';
     h+='<div style="border:1px solid var(--border);border-radius:7px;margin-bottom:8px;overflow:hidden">';
     h+='<div style="background:var(--surface2);padding:8px 12px;display:flex;align-items:center;gap:10px">';
-    h+='<span class="badge '+bcls+'">'+esc(hr.severity||'MOYEN')+'</span>';
+    h+=sevBadge(hr.severity||'MOYEN');
     h+='<strong>'+esc(hr.rule||hr.name||'Rule')+'</strong>';
     h+='<span style="margin-left:auto;color:var(--dim);font-size:11px">'+esc(hr.context||'')+'</span></div>';
     h+='<div style="padding:8px 12px"><div class="code" style="font-size:11px">'+esc((hr.preview||'').substring(0,120))+'</div>'+tagHtml+'</div></div>';

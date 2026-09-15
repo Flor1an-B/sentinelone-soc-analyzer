@@ -92,7 +92,7 @@ except ImportError:
 # ---------------------------------------------------------------------------
 # VERSION & METADATA
 # ---------------------------------------------------------------------------
-__version__  = "3.6.0"
+__version__  = "3.6.1"
 __author__   = "Florian Bertaux"
 __tool__     = "S1 Analyzer"
 
@@ -1752,42 +1752,58 @@ KNOWN_NETWORKS = {
 }
 
 # Vecteurs d'attaque connus identifiables via le processus parent
-ATTACK_VECTOR_PARENTS = {
-    "w3wp.exe":     ("CRITIQUE", "Webshell ou RCE via IIS (T1190)"),
-    "httpd":        ("CRITIQUE", "Webshell ou RCE via Apache (T1190)"),
-    "nginx":        ("CRITIQUE", "Webshell ou RCE via Nginx (T1190)"),
-    "tomcat":       ("CRITIQUE", "Webshell ou RCE via Tomcat (T1190)"),
-    "iisexpress":   ("CRITIQUE", "Webshell ou RCE via IIS Express (T1190)"),
-    "java.exe":     ("ELEVE",    "Execution depuis JVM : exploit Java possible (Log4Shell)"),
-    "sqlservr.exe": ("CRITIQUE", "Execution depuis SQL Server : xp_cmdshell active (T1505)"),
-    "msbuild.exe":  ("ELEVE",    "MSBuild utilise comme LOLBin (T1127.001)"),
-    "wscript.exe":  ("ELEVE",    "Windows Script Host : execution VBScript/JScript (T1059.005)"),
-    "cscript.exe":  ("ELEVE",    "Console Script Host : execution VBScript/JScript (T1059.005)"),
-    "mshta.exe":    ("CRITIQUE", "HTA (HTML Application) : vecteur phishing classique (T1218.005)"),
-    "regsvr32.exe": ("CRITIQUE", "Squiblydoo LOLBin : execution via regsvr32 (T1218.010)"),
-    "rundll32.exe": ("ELEVE",    "Rundll32 LOLBin : execution de DLL arbitraire (T1218.011)"),
-    "certutil.exe": ("CRITIQUE", "Certutil LOLBin : download ou decode de payload (T1105)"),
-    "schtasks.exe": ("ELEVE",    "Tache planifiee comme vecteur d'execution (T1053.005)"),
-    "wmiprvse.exe": ("ELEVE",    "Execution via WMI : mouvement lateral probable (T1047)"),
-    "wmic.exe":     ("ELEVE",    "WMIC utilise comme vecteur d'execution LOLBin (T1047)"),
+# Internal severity levels stay French (CRITIQUE/ELEVE/MOYEN/FAIBLE/INFO) —
+# used pervasively as scoring-logic keys throughout VerdictEngine/INDICATOR_DB
+# and touching every comparison would be high-risk for no behavior change.
+# Every place a severity is interpolated into text shown to the user must
+# instead go through this translation so no French word reaches the report.
+SEVERITY_EN = {
+    "CRITIQUE": "CRITICAL", "ELEVE": "HIGH", "MOYEN": "MEDIUM",
+    "FAIBLE": "LOW", "INFO": "INFO",
 }
 
-# Clés registre de persistance connues
+
+def _sev_en(sev: str) -> str:
+    """Translate an internal French severity level to its English display form."""
+    return SEVERITY_EN.get(sev, sev)
+
+
+ATTACK_VECTOR_PARENTS = {
+    "w3wp.exe":     ("CRITIQUE", "Webshell or RCE via IIS (T1190)"),
+    "httpd":        ("CRITIQUE", "Webshell or RCE via Apache (T1190)"),
+    "nginx":        ("CRITIQUE", "Webshell or RCE via Nginx (T1190)"),
+    "tomcat":       ("CRITIQUE", "Webshell or RCE via Tomcat (T1190)"),
+    "iisexpress":   ("CRITIQUE", "Webshell or RCE via IIS Express (T1190)"),
+    "java.exe":     ("ELEVE",    "Execution from JVM: possible Java exploit (Log4Shell)"),
+    "sqlservr.exe": ("CRITIQUE", "Execution from SQL Server: xp_cmdshell active (T1505)"),
+    "msbuild.exe":  ("ELEVE",    "MSBuild used as a LOLBin (T1127.001)"),
+    "wscript.exe":  ("ELEVE",    "Windows Script Host: VBScript/JScript execution (T1059.005)"),
+    "cscript.exe":  ("ELEVE",    "Console Script Host: VBScript/JScript execution (T1059.005)"),
+    "mshta.exe":    ("CRITIQUE", "HTA (HTML Application): classic phishing vector (T1218.005)"),
+    "regsvr32.exe": ("CRITIQUE", "Squiblydoo LOLBin: execution via regsvr32 (T1218.010)"),
+    "rundll32.exe": ("ELEVE",    "Rundll32 LOLBin: arbitrary DLL execution (T1218.011)"),
+    "certutil.exe": ("CRITIQUE", "Certutil LOLBin: payload download or decode (T1105)"),
+    "schtasks.exe": ("ELEVE",    "Scheduled task used as an execution vector (T1053.005)"),
+    "wmiprvse.exe": ("ELEVE",    "Execution via WMI: likely lateral movement (T1047)"),
+    "wmic.exe":     ("ELEVE",    "WMIC used as a LOLBin execution vector (T1047)"),
+}
+
+# Known registry persistence keys
 PERSISTENCE_REG_PATTERNS = [
-    (r"\\Run$",                   "Cle Run : execution automatique a chaque logon"),
-    (r"\\RunOnce$",               "Cle RunOnce : execution unique au prochain logon"),
-    (r"\\RunServices",            "Cle RunServices : service demarrant automatiquement"),
-    (r"\\Winlogon\\Shell",        "Winlogon Shell : remplacement du shell utilisateur"),
-    (r"\\Winlogon\\Userinit",     "Winlogon Userinit : execution au logon utilisateur"),
-    (r"\\Image File Execution",   "IFEO : hijacking d'un debugger pour un exe cible"),
-    (r"\\AppInit_DLLs",           "AppInit_DLLs : DLL injectee dans tous les processus GUI"),
-    (r"\\Startup\\",              "Dossier Startup : execution au demarrage"),
-    (r"\\Classes\\.*LocalServer", "COM LocalServer : persistence via objet COM"),
-    (r"\\BootExecute",            "BootExecute : execution avant le chargement de Windows"),
-    (r"\\SessionManager\\.*Known","Session Manager : execution au boot (drivers)"),
+    (r"\\Run$",                   "Run key: automatic execution on every logon"),
+    (r"\\RunOnce$",               "RunOnce key: one-time execution on next logon"),
+    (r"\\RunServices",            "RunServices key: service starting automatically"),
+    (r"\\Winlogon\\Shell",        "Winlogon Shell: replacement of the user shell"),
+    (r"\\Winlogon\\Userinit",     "Winlogon Userinit: execution on user logon"),
+    (r"\\Image File Execution",   "IFEO: debugger hijack targeting an executable"),
+    (r"\\AppInit_DLLs",           "AppInit_DLLs: DLL injected into every GUI process"),
+    (r"\\Startup\\",              "Startup folder: execution on startup"),
+    (r"\\Classes\\.*LocalServer", "COM LocalServer: persistence via a COM object"),
+    (r"\\BootExecute",            "BootExecute: execution before Windows finishes loading"),
+    (r"\\SessionManager\\.*Known","Session Manager: execution at boot (drivers)"),
     (r"\\Services\\[^\\]+\\(Start|ImagePath|ServiceDll|FailureCommand)$",
-     "Modification d'une cle de service Windows (demarrage/executable)"),
-    (r"\\Policies.*Run",          "GPO Run : persistance via politiques de groupe"),
+     "Modification of a Windows service key (startup/executable)"),
+    (r"\\Policies.*Run",          "GPO Run: persistence via Group Policy"),
 ]
 
 # Processus systeme standards (leur presence comme parent est normale)
@@ -4813,7 +4829,7 @@ class VerdictEngine:
         if sev:
             pts = 5 if sev == "CRITIQUE" else 3
             self._tp(pts, "independent",
-                     f"[{sev}] Attack vector identified: {desc} "
+                     f"[{_sev_en(sev)}] Attack vector identified: {desc} "
                      f"(process launched from a high-risk program)",
                      severity="critical" if sev == "CRITIQUE" else "high")
         else:
@@ -4870,7 +4886,7 @@ class VerdictEngine:
                 self._add_score(max(1, tp_score - 2), "s1_indicators")
                 self.observations.append(f"[MEDIUM] {name} detected")
             else:
-                self.observations.append(f"[{sev}] {name} detected (low forensic value alone)")
+                self.observations.append(f"[{_sev_en(sev)}] {name} detected (low forensic value alone)")
 
             # Bayesian confidence bonus
             bonus = self.ctx.get_confidence_bonus(ind)
@@ -4898,7 +4914,7 @@ class VerdictEngine:
             pts = {"CRITIQUE": 4, "ELEVE": 2, "MOYEN": 1}.get(sev, 1)
             sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
             self._tp(pts, "independent",
-                     f"[SCRIPT {sev}] {finding['description']} "
+                     f"[SCRIPT {_sev_en(sev)}] {finding['description']} "
                      f"(extract: ...{finding['context'][:80]}...)",
                      severity=sev_flag)
 
@@ -4909,7 +4925,7 @@ class VerdictEngine:
             pts = {"ELEVE": 2, "MOYEN": 1}.get(sev, 0)
             if pts > 0:
                 self._tp(pts, "independent",
-                         f"[MODULE {sev}] {mod['name']}: {mod['analysis']}",
+                         f"[MODULE {_sev_en(sev)}] {mod['name']}: {mod['analysis']}",
                          severity="high" if sev == "ELEVE" else None)
 
     def _check_network(self):
@@ -5021,7 +5037,7 @@ class VerdictEngine:
             sev = a["severity"]
             pts = sev_pts.get(sev, 1)
             sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
-            self._tp(pts, "independent", f"[GRAPH {sev}] {a['description']}", severity=sev_flag)
+            self._tp(pts, "independent", f"[GRAPH {_sev_en(sev)}] {a['description']}", severity=sev_flag)
 
     def _check_stats(self, stats: "StatisticalAnalyzer"):
         """Score based on statistical anomalies — indépendant (IsolationForest
@@ -5053,7 +5069,7 @@ class VerdictEngine:
             pts = {"CRITIQUE": 4, "ELEVE": 2}.get(sev, 1)
             sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
             self._tp(pts, "independent",
-                     f"[YARA {sev}] Rule '{hit['rule']}' matched in {hit['context']}: "
+                     f"[YARA {_sev_en(sev)}] Rule '{hit['rule']}' matched in {hit['context']}: "
                      f"{hit['preview'][:60]}\u2026",
                      severity=sev_flag)
 
@@ -5123,7 +5139,7 @@ class VerdictEngine:
             pts = {"CRITIQUE": 4, "ELEVE": 2, "MOYEN": 1}.get(sev, 1)
             sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
             self._tp(pts, "independent",
-                     f"[CMDLINE {sev}] {f['description']} "
+                     f"[CMDLINE {_sev_en(sev)}] {f['description']} "
                      f"(extract: ...{f['context'][:70]}...)",
                      severity=sev_flag)
         for ep in cmdline.get_high_entropy_procs()[:3]:
@@ -5149,7 +5165,7 @@ class VerdictEngine:
             if pts:
                 sev_flag = "critical" if sev == "CRITIQUE" else ("high" if sev == "ELEVE" else None)
                 self._tp(pts, "independent",
-                         f"[UA {sev}] {ua['description']} "
+                         f"[UA {_sev_en(sev)}] {ua['description']} "
                          f"(UA: {ua['user_agent'][:60]})",
                          severity=sev_flag)
 
